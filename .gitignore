@@ -6,3 +6,6 @@ dist/
 Thumbs.db
 *.log
 wrangler.toml
+
+# Never commit a ledger export to a public repo
+*.csv
