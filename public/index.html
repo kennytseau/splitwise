@@ -395,8 +395,9 @@ function put(kind,id,body){
   rebuildViews();persist();render();scheduleSync();
 }
 function drop(kind,id){
-  var cur=S.rec[kind][id];
-  S.rec[kind][id]={body:cur?cur.body:{},u:Date.now(),d:1};
+  /* A tombstone carries no body. Deleting an expense should stop it existing
+     on the server too, rather than leaving a sealed copy of it behind. */
+  S.rec[kind][id]={body:{},u:Date.now(),d:1};
   S.dirty[kind+"/"+id]=1;
   rebuildViews();persist();render();scheduleSync();
 }
