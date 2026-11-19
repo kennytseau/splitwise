@@ -1,0 +1,15 @@
+{
+  "name": "Evenly",
+  "short_name": "Evenly",
+  "description": "Split shared costs between the people you live and travel with.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#F1F4F2",
+  "theme_color": "#F1F4F2",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

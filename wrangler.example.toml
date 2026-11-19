@@ -1,0 +1,18 @@
+# Optional: only needed if you deploy with the wrangler CLI instead of the
+# Cloudflare dashboard. Copy to wrangler.toml and fill in database_id.
+#
+#   npm install -g wrangler
+#   wrangler d1 create evenly          # prints the database_id
+#   wrangler d1 execute evenly --remote --file schema.sql
+#   wrangler pages deploy public
+#
+# wrangler.toml is gitignored, so your database_id never reaches the repo.
+
+name = "evenly"
+pages_build_output_dir = "public"
+compatibility_date = "2026-09-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "evenly"
+database_id = "paste-your-database-id-here"
