@@ -198,6 +198,9 @@ input,select,textarea{font:inherit;color:inherit}
 .splitrow input[type="checkbox"]{width:17px;height:17px;accent-color:var(--accent);flex:0 0 auto}
 .splitrow .cell{text-align:right;font-size:13.5px;color:var(--muted)}
 .splitrow .inp{padding:6px 8px;text-align:right}
+.maprow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid var(--line)}
+.maprow:last-of-type{border-bottom:0}
+.maprow>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tally{display:flex;justify-content:space-between;gap:10px;font-size:13px;padding:10px 0 0;color:var(--muted)}
 .tally b{font-family:var(--font-display)}
 .warn{color:var(--debit)}
@@ -352,7 +355,8 @@ var S={
   space:null,                                    /* {id, key} when shared */
   cursor:0,
   status:"local",                                /* local | ok | busy | off */
-  lastSync:0,
+  lastSync:0,queued:0,
+  shown:200,                                     /* expense rows drawn at once */
   gid:null,tab:"expenses",sheet:null,confirm:null,me:{},ready:false
 };
 
@@ -489,10 +493,15 @@ function api(method,path,body){
       });
     });
 }
-async function dirtyRecords(){
-  var out=[];
-  for(var key in S.dirty){
-    var ix=key.indexOf("/"),kind=key.slice(0,ix),id=key.slice(ix+1);
+/* Kept below the server's per-push ceiling. An import leaves thousands of
+   records dirty at once, so pushes go up in chunks rather than one request
+   the server would refuse outright. */
+var PUSH_CHUNK=120;
+
+async function sealRecords(keys){
+  var out=[],i;
+  for(i=0;i<keys.length;i++){
+    var key=keys[i],ix=key.indexOf("/"),kind=key.slice(0,ix),id=key.slice(ix+1);
     var r=S.rec[kind]&&S.rec[kind][id];
     if(!r)continue;
     out.push({kind:kind,id:id,body:await seal(r.body||{}),updated:r.u,deleted:r.d?1:0});
@@ -530,11 +539,19 @@ async function sync(){
   if(syncing){syncAgain=true;return;}
   syncing=true;setStatus("busy");
   try{
-    var sent=await dirtyRecords(),i;
-    var res=await api("POST","api/sync",{records:sent,since:S.cursor});
-    for(i=0;i<sent.length;i++)delete S.dirty[sent[i].kind+"/"+sent[i].id];
-    await applyRemote(res.records||[]);
-    S.cursor=res.cursor||S.cursor;
+    var queue=Object.keys(S.dirty),res,i;
+    do{
+      var chunk=queue.splice(0,PUSH_CHUNK);
+      var sent=await sealRecords(chunk);
+      S.queued=queue.length;
+      if(sent.length)renderSync();
+      res=await api("POST","api/sync",{records:sent,since:S.cursor});
+      for(i=0;i<sent.length;i++)delete S.dirty[sent[i].kind+"/"+sent[i].id];
+      await applyRemote(res.records||[]);
+      S.cursor=res.cursor||S.cursor;
+      if(queue.length)persist();        /* so a long import survives a reload */
+    }while(queue.length);
+    S.queued=0;
     while(res.more){
       res=await api("POST","api/sync",{records:[],since:S.cursor});
       await applyRemote(res.records||[]);
@@ -767,6 +784,186 @@ function computeShares(total,mode,sel,raw,cur){
 }
 
 /* ========================================================================
+   Importing a Splitwise CSV export
+
+   The export gives each person's NET effect on a row rather than their
+   share: positive means they came out ahead on it, negative means they owe,
+   and the columns sum to zero. For the one person who paid (the positive
+   column):
+
+       payer's share = cost - payer's net
+       everyone else = -their own net
+
+   which rebuilds uneven splits exactly, not just even ones. Rows in the
+   "Payment" category are transfers between two people, so they become
+   settlements; treating them as expenses would distort every balance.
+   ====================================================================== */
+var SW_CATEGORIES={
+  "dining out":"food","liquor":"food",
+  "groceries":"groceries",
+  "rent":"home","mortgage":"home","home - other":"home","furniture":"home",
+  "household supplies":"home","cleaning":"home","services":"home",
+  "car":"transport","gas/fuel":"transport","taxi":"transport","parking":"transport",
+  "bus/train":"transport","bicycle":"transport","transportation - other":"transport",
+  "hotel":"travel","plane":"travel",
+  "movies":"fun","music":"fun","sports":"fun",
+  "electricity":"utils","utilities - other":"utils","water":"utils","heat/gas":"utils",
+  "tv/phone/internet":"utils"
+};
+function swCategory(name){
+  return SW_CATEGORIES[String(name||"").trim().toLowerCase()]||"other";
+}
+function splitCsvLine(line){
+  var out=[],cur="",q=false,i,c;
+  for(i=0;i<line.length;i++){
+    c=line.charAt(i);
+    if(q){
+      if(c==='"'){if(line.charAt(i+1)==='"'){cur+='"';i++;}else q=false;}
+      else cur+=c;
+    }
+    else if(c==='"')q=true;
+    else if(c===","){out.push(cur);cur="";}
+    else cur+=c;
+  }
+  out.push(cur);
+  return out;
+}
+/* Stable per-file tag, so re-importing the same export overwrites its own
+   rows instead of duplicating the whole ledger. */
+function fingerprint(text){
+  var h=2166136261>>>0,i;
+  for(i=0;i<text.length;i++){h^=text.charCodeAt(i);h=Math.imul(h,16777619)>>>0;}
+  return ("0000000"+h.toString(16)).slice(-8);
+}
+function parseSplitwise(text){
+  var lines=text.replace(/^﻿/,"").split(/\r\n|\n|\r/);
+  var header=null,people=[],rows=[],skipped=0,i,k;
+  for(i=0;i<lines.length;i++){
+    if(!lines[i].trim())continue;
+    var f=splitCsvLine(lines[i]);
+    if(!header){
+      header=f;
+      if(f.length<6||String(f[0]).trim().toLowerCase()!=="date")
+        throw new Error("That does not look like a Splitwise export — the first column should be Date.");
+      people=f.slice(5).map(function(s){return String(s).trim();}).filter(function(s){return s;});
+      if(people.length<2)throw new Error("The file lists fewer than two people.");
+      continue;
+    }
+    if(f.length<5+people.length)continue;
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(String(f[0]).trim()))continue;
+    if(String(f[1]).trim().toLowerCase()==="total balance")continue;
+    var cost=parseFloat(f[3]);
+    if(!isFinite(cost))continue;
+    var nets=[],positives=0;
+    for(k=0;k<people.length;k++){
+      var v=parseFloat(f[5+k]);
+      nets.push(isFinite(v)?Math.round(v*100):0);
+      if(nets[k]>0)positives++;
+    }
+    if(positives>1){skipped++;continue;}  /* split across two payers: not recoverable */
+    rows.push({date:String(f[0]).trim(),desc:String(f[1]).trim(),cat:String(f[2]).trim(),
+      cents:Math.round(cost*100),cur:String(f[4]).trim(),nets:nets});
+  }
+  if(!rows.length)throw new Error("No expense rows were found in that file.");
+  var payments=0;
+  for(i=0;i<rows.length;i++)if(rows[i].cat.toLowerCase()==="payment")payments++;
+  var dates=rows.map(function(r){return r.date;}).sort();
+  return {people:people,rows:rows,payments:payments,expenses:rows.length-payments,
+    skipped:skipped,from:dates[0],to:dates[dates.length-1],currency:rows[0].cur||"",
+    fid:fingerprint(text.length+"|"+text.slice(0,400)+text.slice(-400))};
+}
+function importRecords(p,g,map){
+  var out=[],i,k;
+  for(i=0;i<p.rows.length;i++){
+    var r=p.rows[i],id="i"+p.fid+"-"+i;
+    var when=Date.parse(r.date+"T12:00:00")||Date.now();
+    if(r.cat.toLowerCase()==="payment"){
+      var from=null,to=null;
+      for(k=0;k<r.nets.length;k++){
+        if(r.nets[k]>0)from=map[k];
+        else if(r.nets[k]<0)to=map[k];
+      }
+      if(from===null||to===null||from===to)continue;
+      out.push({kind:"settlements",id:id,
+        body:{id:id,gid:g.id,from:from,to:to,cents:r.cents,date:r.date,createdAt:when}});
+      continue;
+    }
+    var pi=0;
+    for(k=1;k<r.nets.length;k++)if(r.nets[k]>r.nets[pi])pi=k;
+    var shares=[],sum=0;
+    for(k=0;k<r.nets.length;k++){
+      var c=(k===pi)?(r.cents-r.nets[k]):(-r.nets[k]);
+      if(c<0)c=0;
+      shares.push({m:map[k],cents:c});
+      sum+=c;
+    }
+    if(sum!==r.cents)shares[pi].cents+=r.cents-sum;   /* absorb any rounding */
+    var raw={};
+    for(k=0;k<shares.length;k++)raw[shares[k].m]=(shares[k].cents/100).toFixed(2);
+    out.push({kind:"expenses",id:id,
+      body:{id:id,gid:g.id,desc:r.desc||"Imported expense",cents:r.cents,
+        category:swCategory(r.cat),date:r.date,note:"",mode:"exact",
+        payers:[{m:map[pi],cents:r.cents}],shares:shares,rawSplit:raw,createdAt:when}});
+  }
+  return out;
+}
+/* One pass for a whole import: a per-record put() would render and sync
+   thousands of times over. */
+function putMany(list){
+  var i;
+  for(i=0;i<list.length;i++){
+    S.rec[list[i].kind][list[i].id]={body:list[i].body,u:Date.now(),d:0};
+    S.dirty[list[i].kind+"/"+list[i].id]=1;
+  }
+  rebuildViews();persist();render();scheduleSync();
+}
+function readImportFile(input){
+  var file=input.files&&input.files[0];
+  if(!file||!S.sheet)return;
+  var reader=new FileReader();
+  reader.onload=function(){
+    try{
+      var p=parseSplitwise(String(reader.result));
+      var g=S.groups[S.sheet.gid],used={},map=[],i,j;
+      for(i=0;i<p.people.length;i++)map.push(null);
+      for(i=0;i<p.people.length;i++){
+        var want=p.people[i].toLowerCase().split(" ")[0];
+        for(j=0;j<g.members.length;j++){
+          if(used[g.members[j].id])continue;
+          var nm=g.members[j].name.toLowerCase();
+          if(nm===want||nm.indexOf(want)===0||want.indexOf(nm)===0){
+            map[i]=g.members[j].id;used[map[i]]=1;break;
+          }
+        }
+      }
+      for(i=0;i<map.length;i++){                 /* whoever is left, in order */
+        if(map[i])continue;
+        for(j=0;j<g.members.length;j++)
+          if(!used[g.members[j].id]){map[i]=g.members[j].id;used[map[i]]=1;break;}
+        if(!map[i])map[i]=g.members[0].id;
+      }
+      S.sheet.parsed=p;S.sheet.map=map;S.sheet.error=null;
+    }catch(e){
+      S.sheet.parsed=null;S.sheet.error=e.message||"That file could not be read.";
+    }
+    render();
+  };
+  reader.onerror=function(){
+    if(S.sheet){S.sheet.error="That file could not be read.";render();}
+  };
+  reader.readAsText(file);
+}
+function applyImport(){
+  var F=S.sheet,g=F&&S.groups[F.gid];
+  if(!F||!F.parsed||!g)return;
+  var recs=importRecords(F.parsed,g,F.map);
+  if(!recs.length){toast("Nothing in that file could be imported.");return;}
+  S.sheet=null;S.shown=200;
+  putMany(recs);
+  toast("Imported "+recs.length+" entries. Encrypting and syncing them now…");
+}
+
+/* ========================================================================
    Toast
    ====================================================================== */
 var toastT=null;
@@ -785,7 +982,7 @@ function renderSync(){
   if(!el)return;
   var cls="sync",label="On this device";
   if(S.space){
-    if(S.status==="busy"){cls+=" busy";label="Syncing…";}
+    if(S.status==="busy"){cls+=" busy";label=S.queued?"Syncing… "+S.queued+" left":"Syncing…";}
     else if(S.status==="off"){cls+=" off";label="Offline — saved here";}
     else{cls+=" ok";label="Shared"+(S.lastSync?" · synced "+ago(S.lastSync):"");}
   }
@@ -890,13 +1087,17 @@ function renderExpenses(g,ex,me){
       +'<button class="btn primary" data-act="addexp">Add an expense</button></div></div>';
   }
   var h="",curMonth=null,rows="",monthTotal=0,i;
+  /* Only the newest slice is drawn. A ledger imported from years of history
+     can run to thousands of rows, and building them all at once locks up the
+     page for seconds on a phone. Balances still count every expense. */
+  var limit=Math.min(ex.length,S.shown);
   function flush(){
     if(curMonth===null)return;
     h+='<div class="card" style="margin-bottom:14px"><div class="mhead"><span>'+esc(curMonth)
       +'</span><span class="mt num">'+esc(fmt(monthTotal,g.currency))+'</span></div>'+rows+'</div>';
     rows="";monthTotal=0;
   }
-  for(i=0;i<ex.length;i++){
+  for(i=0;i<limit;i++){
     var e=ex[i],dp=dparts(e.date),label=MONL[dp.m]+" "+dp.y;
     if(label!==curMonth){flush();curMonth=label;}
     monthTotal+=e.cents;
@@ -917,6 +1118,9 @@ function renderExpenses(g,ex,me){
       +'<span class="rside">'+side+'</span></button>';
   }
   flush();
+  if(ex.length>limit)
+    h+='<button class="btn block" data-act="showmore">Show earlier expenses — '
+      +(ex.length-limit)+' older still hidden</button>';
   return h;
 }
 function renderBalances(g,n,me){
@@ -1005,6 +1209,7 @@ function renderSheet(){
   else if(k==="settle")h=sheetSettle();
   else if(k==="members")h=sheetMembers();
   else if(k==="gmenu")h=sheetGmenu();
+  else if(k==="import")h=sheetImport();
   else if(k==="share")h=sheetShare();
   root.innerHTML='<div class="scrim" data-act="scrim"><div class="sheet" role="dialog" aria-modal="true">'+h+'</div></div>';
 }
@@ -1193,10 +1398,47 @@ function sheetGmenu(){
     +'<div class="field"><button class="btn block" data-act="editgroup">Rename group or change currency</button></div>'
     +'<div class="field"><button class="btn block" data-act="export">Download expenses as CSV</button>'
     +'<p class="note" style="margin-top:6px">One row per expense, with each person’s share.</p></div>'
+    +'<div class="field"><button class="btn block" data-act="import">Import from a Splitwise export</button>'
+    +'<p class="note" style="margin-top:6px">Brings across expenses, who paid, uneven splits and settlements.</p></div>'
     +'<div class="field"><button class="btn danger block" data-act="delgroup" data-id="'+esc(g.id)+'">'
     +(S.confirm==="grp:"+g.id ? warn : "Delete group")
     +'</button></div></div>'
     +'<div class="sfoot"><button class="btn" data-act="close">Close</button></div>';
+}
+function sheetImport(){
+  var F=S.sheet,g=S.groups[F.gid],i,j;
+  if(!g)return "";
+  var h=shead("Import from Splitwise")+'<div class="sbody">';
+  if(!F.parsed){
+    h+='<p style="margin-top:0">In Splitwise, open the group and choose <b>Export as spreadsheet</b>, '
+      +'then pick the CSV here. Expenses, who paid, uneven splits and settlement payments all come across.</p>'
+      +'<div class="field"><label for="csvfile">CSV file</label>'
+      +'<input class="inp" type="file" id="csvfile" accept=".csv,text/csv"></div>';
+    if(F.error)h+='<p class="note warn">'+esc(F.error)+'</p>';
+    return h+'</div><div class="sfoot"><button class="btn" data-act="close">Cancel</button></div>';
+  }
+  var p=F.parsed;
+  h+='<div class="field"><span class="flabel">In the file</span><p style="margin:0"><b>'
+    +p.expenses+'</b> expenses and <b>'+p.payments+'</b> settlement payments, '
+    +esc(p.from)+' to '+esc(p.to)+'.</p>';
+  if(p.skipped)
+    h+='<p class="note warn" style="margin-top:6px">'+p.skipped+' rows name more than one payer, '
+      +'which this format cannot express. They will be left out.</p>';
+  if(p.currency&&p.currency!==g.currency)
+    h+='<p class="note warn" style="margin-top:6px">The file is in '+esc(p.currency)+' but this group is in '
+      +esc(g.currency)+'. Amounts come across as they are, with no conversion.</p>';
+  h+='</div><div class="field"><span class="flabel">Who is who</span>';
+  for(i=0;i<p.people.length;i++){
+    h+='<div class="maprow"><span>'+esc(p.people[i])+'</span><select class="inp" data-map="'+i+'">';
+    for(j=0;j<g.members.length;j++)
+      h+='<option value="'+esc(g.members[j].id)+'"'+(g.members[j].id===F.map[i]?" selected":"")+'>'
+        +esc(g.members[j].name)+'</option>';
+    h+='</select></div>';
+  }
+  h+='</div><p class="note">Importing the same file again replaces these entries rather than '
+    +'duplicating them. Existing expenses are left alone.</p>';
+  return h+'</div><div class="sfoot"><button class="btn" data-act="close">Cancel</button>'
+    +'<button class="btn primary" data-act="runimport">Import '+(p.expenses+p.payments)+' entries</button></div>';
 }
 function sheetShare(){
   var h=shead("Sharing")+'<div class="sbody">';
@@ -1391,8 +1633,11 @@ document.addEventListener("click",function(ev){
 
   if(a==="scrim"){if(ev.target===t){S.sheet=null;S.confirm=null;render();}return;}
   if(a==="close"){S.sheet=null;S.confirm=null;render();return;}
-  if(a==="pick"){S.gid=t.getAttribute("data-id");lsSet("evenly.gid",S.gid);S.tab="expenses";render();return;}
+  if(a==="pick"){S.gid=t.getAttribute("data-id");lsSet("evenly.gid",S.gid);S.tab="expenses";S.shown=200;render();return;}
   if(a==="tab"){S.tab=t.getAttribute("data-tab");render();return;}
+  if(a==="showmore"){S.shown+=300;render();return;}
+  if(a==="import"){S.sheet={kind:"import",gid:S.gid,parsed:null,map:[],error:null,busy:false};render();return;}
+  if(a==="runimport"){applyImport();return;}
   if(a==="newgroup"){openGroup(null);return;}
   if(a==="editgroup"){openGroup(S.gid);return;}
   if(a==="gmenu"){S.sheet={kind:"gmenu",gid:S.gid};render();return;}
@@ -1497,6 +1742,9 @@ document.addEventListener("change",function(ev){
   var el=ev.target;
   if(el.id==="mesel"){S.me[S.gid]=el.value;lsSet("evenly.me",S.me);render();return;}
   if(!S.sheet)return;
+  if(el.id==="csvfile"){readImportFile(el);return;}
+  var mp=el.getAttribute("data-map");
+  if(mp!==null){S.sheet.map[parseInt(mp,10)]=el.value;return;}
   var sel=el.getAttribute("data-sel");
   if(sel){
     var i=S.sheet.sel.indexOf(sel);
