@@ -1124,14 +1124,14 @@ function sheetMembers(){
 function sheetGmenu(){
   var g=S.groups[S.sheet.gid];
   if(!g)return "";
+  var n=expensesOf(g.id).length;
+  var warn="Tap again to delete this group"+(n?" and its "+n+(n===1?" expense":" expenses"):"");
   return shead(g.name)+'<div class="sbody">'
     +'<div class="field"><button class="btn block" data-act="editgroup">Rename group or change currency</button></div>'
     +'<div class="field"><button class="btn block" data-act="export">Download expenses as CSV</button>'
     +'<p class="note" style="margin-top:6px">One row per expense, with each person’s share.</p></div>'
     +'<div class="field"><button class="btn danger block" data-act="delgroup" data-id="'+esc(g.id)+'">'
-    +(S.confirm==="grp:"+g.id
-      ? "Tap again to delete this group and its "+expensesOf(g.id).length+" expenses"
-      : "Delete group")
+    +(S.confirm==="grp:"+g.id ? warn : "Delete group")
     +'</button></div></div>'
     +'<div class="sfoot"><button class="btn" data-act="close">Close</button></div>';
 }
