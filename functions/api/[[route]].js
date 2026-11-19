@@ -5,10 +5,14 @@
  *   POST /api/ledger   { keyHash }                  -> { id }
  *   POST /api/sync     { records[], since }         -> { records[], cursor, more }
  *
- * A "ledger" is one shared space. Its id is public; its key is the secret half
- * of the share link and never leaves the client except as a request header.
- * Only the SHA-256 of the key is stored, so the database alone does not grant
- * access to anything.
+ * A "ledger" is one shared space. Its id is public. The key in the header is
+ * NOT the share secret: it is an auth key derived from it, and only its
+ * SHA-256 is stored. The separate encryption key never leaves the client, so
+ * this server cannot read a record body even while holding a valid auth key.
+ *
+ * Record bodies arrive as AES-GCM envelopes, {v, iv, ct}. They are opaque
+ * here and are stored and returned verbatim. Nothing in this file should ever
+ * try to interpret one.
  *
  * Conflict handling is last-writer-wins on the client-supplied `updated`
  * timestamp. Every push echoes back the server's current version of each

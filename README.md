@@ -86,16 +86,29 @@ See [`wrangler.example.toml`](wrangler.example.toml) if you would rather use
 
 ## How sharing works
 
-A shared space is a row in the `ledgers` table with a random id and the SHA-256
-of a random 160-bit key. The key lives only in the share link and in each
-browser's local storage; the server stores the hash and compares against it, so
-the database on its own grants access to nothing.
+A shared space is a row in the `ledgers` table, plus a 256-bit secret that is
+generated in the browser and put in the share link's fragment — the part after
+`#`, which browsers never send to a server.
 
-The link is the credential. **Anyone who has it can read and edit that ledger**,
-so treat it the way you would a key to the house — and if it leaks, there is no
-revoke button: start a new space and re-enter the data. Expense bodies are
-stored in plain text in D1, readable by anyone with access to your Cloudflare
-account.
+Two keys are derived from that secret with HKDF:
+
+| Key | Who sees it | Used for |
+| --- | ----------- | -------- |
+| auth key | sent to the server, stored only as a SHA-256 | proving you may read and write the ledger |
+| encryption key | never leaves the device | AES-GCM on every record body |
+
+Because the two are derived separately, holding the auth key tells you nothing
+about the encryption key. **The server stores ciphertext it cannot read**, and
+neither can anyone with access to the Cloudflare account or the D1 database.
+
+What is still visible to the server: how many records a ledger holds, whether
+each is a group, an expense or a settlement, and when each last changed. The
+contents — who, what, how much — are not.
+
+The link is the credential and the key at once. **Anyone who has it can read and
+edit that ledger**, so send it somewhere private. There is no reset and no
+recovery: if the link is lost, the data is unreadable for good, and if it leaks,
+the only remedy is a new space. Export a CSV now and then if that matters.
 
 Each device keeps a full local copy and syncs through a single endpoint, so the
 app keeps working with no connection and catches up when one returns. Conflicts

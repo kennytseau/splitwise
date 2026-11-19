@@ -402,6 +402,65 @@ function drop(kind,id){
 }
 
 /* ========================================================================
+   End-to-end encryption
+
+   The share link carries a 256-bit secret. Two keys are derived from it:
+
+     auth key — sent to the server, which stores only its SHA-256
+     encryption key — never leaves this device
+
+   Record bodies are sealed with AES-GCM before they are pushed, so the
+   database holds ciphertext only. Deriving one key tells you nothing
+   about the other, so even someone reading the server's traffic sees the
+   auth key and still cannot decrypt a single expense.
+
+   What is NOT hidden: how many records exist, whether each is a group,
+   an expense or a settlement, and when each last changed.
+   ====================================================================== */
+var KEYS=null;                      /* {authHex, encKey} while a space is open */
+var TE=new TextEncoder(),TD=new TextDecoder();
+
+function hexToBytes(hex){
+  var out=new Uint8Array(hex.length/2),i;
+  for(i=0;i<out.length;i++)out[i]=parseInt(hex.substr(i*2,2),16);
+  return out;
+}
+function bytesToHex(buf){
+  var b=new Uint8Array(buf),s="",i;
+  for(i=0;i<b.length;i++)s+=("0"+b[i].toString(16)).slice(-2);
+  return s;
+}
+function b64(buf){
+  var b=new Uint8Array(buf),s="",i;
+  for(i=0;i<b.length;i++)s+=String.fromCharCode(b[i]);
+  return btoa(s);
+}
+function unb64(str){
+  var s=atob(str),out=new Uint8Array(s.length),i;
+  for(i=0;i<s.length;i++)out[i]=s.charCodeAt(i);
+  return out;
+}
+async function deriveKeys(secretHex){
+  var base=await crypto.subtle.importKey("raw",hexToBytes(secretHex),"HKDF",false,["deriveBits","deriveKey"]);
+  var authBits=await crypto.subtle.deriveBits(
+    {name:"HKDF",hash:"SHA-256",salt:new Uint8Array(0),info:TE.encode("evenly/auth/v1")},base,256);
+  var encKey=await crypto.subtle.deriveKey(
+    {name:"HKDF",hash:"SHA-256",salt:new Uint8Array(0),info:TE.encode("evenly/enc/v1")},base,
+    {name:"AES-GCM",length:256},false,["encrypt","decrypt"]);
+  return {authHex:bytesToHex(authBits),encKey:encKey};
+}
+async function seal(obj){
+  var iv=crypto.getRandomValues(new Uint8Array(12));
+  var ct=await crypto.subtle.encrypt({name:"AES-GCM",iv:iv},KEYS.encKey,TE.encode(JSON.stringify(obj)));
+  return {v:1,iv:b64(iv),ct:b64(ct)};
+}
+async function unseal(env){
+  if(!env||env.v!==1||typeof env.iv!=="string"||typeof env.ct!=="string")return null;
+  var pt=await crypto.subtle.decrypt({name:"AES-GCM",iv:unb64(env.iv)},KEYS.encKey,unb64(env.ct));
+  return JSON.parse(TD.decode(pt));
+}
+
+/* ========================================================================
    Sync with the Cloudflare backend
    ====================================================================== */
 var syncT=null,pollT=null,syncing=false,syncAgain=false;
@@ -412,7 +471,7 @@ function setStatus(s){
 }
 function api(method,path,body){
   var headers={};
-  if(S.space){headers["x-ledger-id"]=S.space.id;headers["x-ledger-key"]=S.space.key;}
+  if(S.space&&KEYS){headers["x-ledger-id"]=S.space.id;headers["x-ledger-key"]=KEYS.authHex;}
   if(body)headers["content-type"]="application/json";
   return fetch(path,{method:method,headers:headers,body:body?JSON.stringify(body):undefined})
     .then(function(res){
@@ -429,28 +488,34 @@ function api(method,path,body){
       });
     });
 }
-function dirtyRecords(){
+async function dirtyRecords(){
   var out=[];
   for(var key in S.dirty){
     var ix=key.indexOf("/"),kind=key.slice(0,ix),id=key.slice(ix+1);
     var r=S.rec[kind]&&S.rec[kind][id];
     if(!r)continue;
-    out.push({kind:kind,id:id,body:r.body||{},updated:r.u,deleted:r.d?1:0});
+    out.push({kind:kind,id:id,body:await seal(r.body||{}),updated:r.u,deleted:r.d?1:0});
   }
   return out;
 }
-function applyRemote(records){
-  var changed=false;
-  for(var i=0;i<records.length;i++){
+async function applyRemote(records){
+  var changed=false,unreadable=0,i;
+  for(i=0;i<records.length;i++){
     var r=records[i];
     if(KINDS.indexOf(r.kind)<0)continue;
     var cur=S.rec[r.kind][r.id];
     var isDirty=!!S.dirty[r.kind+"/"+r.id];
     var take=!cur||(isDirty?r.updated>cur.u:r.updated>=cur.u);
     if(!take)continue;
-    S.rec[r.kind][r.id]={body:r.body||{},u:r.updated,d:r.deleted?1:0};
+    var body=null;
+    try{body=await unseal(r.body);}catch(e){body=null;}
+    if(body===null){unreadable++;continue;}
+    S.rec[r.kind][r.id]={body:body,u:r.updated,d:r.deleted?1:0};
     changed=true;
   }
+  /* Records this key cannot open are left alone rather than dropped: the
+     right link would still read them. */
+  if(unreadable)S.unreadable=unreadable;
   if(changed)rebuildViews();
   return changed;
 }
@@ -459,35 +524,31 @@ function scheduleSync(){
   if(syncT)clearTimeout(syncT);
   syncT=setTimeout(function(){syncT=null;sync();},700);
 }
-function sync(){
-  if(!S.space)return Promise.resolve();
-  if(syncing){syncAgain=true;return Promise.resolve();}
+async function sync(){
+  if(!S.space||!KEYS)return;
+  if(syncing){syncAgain=true;return;}
   syncing=true;setStatus("busy");
-  var sent=dirtyRecords();
-  return api("POST","api/sync",{records:sent,since:S.cursor})
-    .then(function step(res){
-      for(var i=0;i<sent.length;i++)delete S.dirty[sent[i].kind+"/"+sent[i].id];
-      sent=[];
-      applyRemote(res.records||[]);
+  try{
+    var sent=await dirtyRecords(),i;
+    var res=await api("POST","api/sync",{records:sent,since:S.cursor});
+    for(i=0;i<sent.length;i++)delete S.dirty[sent[i].kind+"/"+sent[i].id];
+    await applyRemote(res.records||[]);
+    S.cursor=res.cursor||S.cursor;
+    while(res.more){
+      res=await api("POST","api/sync",{records:[],since:S.cursor});
+      await applyRemote(res.records||[]);
       S.cursor=res.cursor||S.cursor;
-      if(res.more)return api("POST","api/sync",{records:[],since:S.cursor}).then(step);
-      return null;
-    })
-    .then(function(){
-      S.lastSync=Date.now();
-      persist();setStatus("ok");render();
-    })
-    .catch(function(err){
-      if(err.code==="unauthorised"||err.status===401||err.status===404){
-        setStatus("off");
-        toast("This shared space could not be opened. The link may have been revoked.");
-      }else setStatus("off");
-      persist();
-    })
-    .then(function(){
-      syncing=false;
-      if(syncAgain){syncAgain=false;scheduleSync();}
-    });
+    }
+    S.lastSync=Date.now();
+    persist();setStatus("ok");render();
+  }catch(err){
+    setStatus("off");
+    if(err&&(err.code==="unauthorised"||err.status===401||err.status===404))
+      toast("That shared space could not be opened. The link may be wrong or no longer valid.");
+    persist();
+  }
+  syncing=false;
+  if(syncAgain){syncAgain=false;scheduleSync();}
 }
 function startPolling(){
   if(pollT)clearInterval(pollT);
@@ -508,7 +569,7 @@ function clearShareHash(){
 }
 function leaveSpace(){
   persist();
-  S.space=null;
+  S.space=null;KEYS=null;
   lsDel("evenly.space");
   if(pollT)clearInterval(pollT);
   loadData();
@@ -522,33 +583,34 @@ function createSpace(){
     toast("Sharing needs a secure connection. Open this app over https rather than a file or plain http.");
     return Promise.resolve();
   }
-  var key=randomHex(20);
+  var secret=randomHex(32);                       /* 256-bit share secret */
   setStatus("busy");
-  return sha256Hex(key)
-    .then(function(hash){return api("POST","api/ledger",{keyHash:hash});})
-    .then(function(res){
+  return (async function(){
+    try{
+      var keys=await deriveKeys(secret);
+      var res=await api("POST","api/ledger",{keyHash:await sha256Hex(keys.authHex)});
       /* carry everything already entered on this device into the new space */
-      var carried=S.rec;
-      S.space={id:res.id,key:key};
+      var carried=S.rec,k,id;
+      S.space={id:res.id,key:secret};
+      KEYS=keys;
       lsSet("evenly.space",S.space);
       S.rec=carried;S.cursor=0;S.dirty={};
-      for(var k=0;k<KINDS.length;k++)
-        for(var id in S.rec[KINDS[k]])S.dirty[KINDS[k]+"/"+id]=1;
+      for(k=0;k<KINDS.length;k++)
+        for(id in S.rec[KINDS[k]])S.dirty[KINDS[k]+"/"+id]=1;
       rebuildViews();persist();
-      return sync();
-    })
-    .then(function(){
+      await sync();
       startPolling();
       if(S.sheet&&S.sheet.kind==="share")render();
       toast("Shared space ready. Send the link to whoever you split with.");
-    })
-    .catch(function(err){
-      setStatus(S.space?"off":"local");
-      toast(err.code==="no_database"
+    }catch(err){
+      S.space=null;KEYS=null;lsDel("evenly.space");
+      setStatus("local");
+      toast(err&&err.code==="no_database"
         ? "The server has no database attached yet — see the README for the D1 setup."
         : "Could not reach the server, so sharing is not available right now.");
       render();
-    });
+    }
+  })();
 }
 function shareLink(){
   if(!S.space)return "";
@@ -1142,14 +1204,18 @@ function sheetShare(){
       +'Create a shared space and everything here moves to your own server, '
       +'so anyone you send the link to sees the same figures and can add expenses too.</p>'
       +'<div class="field"><button class="btn primary block" data-act="createspace">Create a shared space</button></div>'
-      +'<p class="note">Anyone with the link can read and edit this ledger, so treat it like a key. '
-      +'No sign-in, no accounts.</p>';
+      +'<p class="note">Expenses are encrypted on this device before they are sent, with a key that '
+      +'lives only in the share link. The server stores unreadable ciphertext. '
+      +'That also means the link cannot be recovered or reset — lose it and the ledger is gone, '
+      +'so keep a copy somewhere safe.</p>';
   }else{
     h+='<div class="field"><span class="flabel">Share link</span>'
       +'<div class="linkbox"><input class="inp" id="sharelink" readonly value="'+esc(shareLink())+'">'
       +'<button class="btn" data-act="copylink">Copy</button></div></div>'
       +'<p class="note">Send this to the people you split with. Opening it on any device joins this '
-      +'space — no account needed. Anyone with it can edit, so share it the way you would a key.</p>'
+      +'space — no account needed. The link is also the decryption key: without it nobody can read '
+      +'this ledger, and with it they can read and change everything. There is no way to reset it, '
+      +'so keep a copy somewhere safe and send it somewhere private.</p>'
       +'<div class="field"><span class="flabel">Status</span><p style="margin:0">'
       +(S.status==="off"?"Offline. Changes are saved on this device and will sync when the connection returns."
         :S.lastSync?"Synced "+esc(ago(S.lastSync))+".":"Syncing…")+'</p></div>'
@@ -1512,7 +1578,18 @@ setStatus(S.space?"busy":"local");
 render();
 
 if(S.space){
-  sync().then(startPolling);
+  if(self.crypto&&self.crypto.subtle){
+    deriveKeys(S.space.key)
+      .then(function(k){KEYS=k;return sync();})
+      .then(startPolling)
+      .catch(function(){
+        setStatus("off");
+        toast("Could not unlock this shared space on this device.");
+      });
+  }else{
+    setStatus("off");
+    toast("Shared spaces need a secure connection. Open this app over https.");
+  }
 }
 })();
 </script>
