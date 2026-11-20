@@ -166,6 +166,24 @@ input,select,textarea{font:inherit;color:inherit}
 .empty p{margin:0 auto;max-width:42ch;font-size:14px}
 .empty .btn{margin-top:14px}
 
+/* spending */
+.bars{display:flex;align-items:flex-end;gap:4px;padding:14px 16px 10px;height:124px}
+.bar{flex:1 1 0;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:5px;height:100%;border-radius:6px}
+.bar:hover{background:var(--surface-2)}
+.bar .col{display:block;width:100%;max-width:34px;background:var(--line-strong);border-radius:3px}
+.bar.on .col{background:var(--accent)}
+.bar .lab{font-size:10.5px;color:var(--faint)}
+.bar.on .lab{color:var(--ink);font-weight:600}
+.catrow{display:grid;grid-template-columns:minmax(96px,1.25fr) minmax(0,1.5fr) minmax(76px,auto) 40px;gap:10px;align-items:center;padding:9px 16px;border-bottom:1px solid var(--line)}
+.catrow:last-of-type{border-bottom:0}
+.catrow .cname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500}
+.track2{height:8px;min-width:0;background:var(--surface-2);border-radius:4px;overflow:hidden}
+.fill2{display:block;height:100%;background:var(--accent);border-radius:4px}
+.fill2.un{background:var(--line-strong)}
+.camt{text-align:right;font-family:var(--font-display);font-size:14.5px}
+.cpct{text-align:right;font-size:12.5px;color:var(--faint)}
+@media (max-width:560px){.catrow{grid-template-columns:minmax(0,1fr) minmax(72px,auto) 38px}.track2{display:none}}
+
 /* activity */
 .act{display:grid;grid-template-columns:auto minmax(0,1fr);gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);align-items:start}
 .act:last-child{border-bottom:0}
@@ -356,10 +374,12 @@ function icon(id){return '<span class="icn"><svg viewBox="0 0 24 24" aria-hidden
 /* ========================================================================
    State
    ====================================================================== */
-var KINDS=["groups","expenses","settlements"];
+var KINDS=["groups","expenses","settlements","rules"];
 var S={
-  rec:{groups:{},expenses:{},settlements:{}},   /* id -> {body, u, d} */
-  groups:{},expenses:{},settlements:{},          /* live views, rebuilt from rec */
+  rec:{groups:{},expenses:{},settlements:{},rules:{}},  /* id -> {body, u, d} */
+  groups:{},expenses:{},settlements:{},rules:{},        /* live views, rebuilt from rec */
+  month:null,                                    /* month shown on the Spending tab */
+  showCats:12,                                   /* merchants listed in the classifier */
   dirty:{},                                      /* "kind/id" -> 1, awaiting push */
   space:null,                                    /* {id, key} when shared */
   cursor:0,
@@ -466,7 +486,7 @@ function persistNow(){
   return writeCache(dataKey(),{rec:S.rec,dirty:S.dirty,cursor:S.cursor});
 }
 function loadData(){
-  S.rec={groups:{},expenses:{},settlements:{}};
+  S.rec={groups:{},expenses:{},settlements:{},rules:{}};
   S.dirty={};S.cursor=0;
   var key=dataKey();
   return idbGet(key).then(function(d){
@@ -830,6 +850,128 @@ function myDelta(e,me){
 }
 
 /* ========================================================================
+   Spending categories
+
+   The category set follows what banks, YNAB and Mint settled on, with the
+   newer lines those older charts of accounts lack -- subscriptions and
+   digital services, savings transfers. Each also rolls up to needs, wants
+   or savings for the 50/30/20 view.
+
+   Nothing is inferred from a merchant's name. "Woolies" is a supermarket
+   to a person and an opaque string to this code, so unless a rule says
+   otherwise it stays unclassified and waits to be told.
+   ====================================================================== */
+var SPEND=[
+  {id:"housing",     label:"Housing",                  bucket:"needs"},
+  {id:"utilities",   label:"Utilities",                bucket:"needs"},
+  {id:"groceries",   label:"Groceries",                bucket:"needs"},
+  {id:"dining",      label:"Dining & takeaway",        bucket:"wants"},
+  {id:"transport",   label:"Transport",                bucket:"needs"},
+  {id:"vehicle",     label:"Vehicle",                  bucket:"needs"},
+  {id:"health",      label:"Health & medical",         bucket:"needs"},
+  {id:"insurance",   label:"Insurance",                bucket:"needs"},
+  {id:"education",   label:"Childcare & education",    bucket:"needs"},
+  {id:"pets",        label:"Pets",                     bucket:"needs"},
+  {id:"personal",    label:"Personal care",            bucket:"wants"},
+  {id:"clothing",    label:"Clothing",                 bucket:"wants"},
+  {id:"household",   label:"Household goods",          bucket:"wants"},
+  {id:"entertainment",label:"Entertainment",           bucket:"wants"},
+  {id:"travel",      label:"Travel & holidays",        bucket:"wants"},
+  {id:"gifts",       label:"Gifts & donations",        bucket:"wants"},
+  {id:"subs",        label:"Subscriptions & digital",  bucket:"wants"},
+  {id:"fees",        label:"Fees, tax & professional", bucket:"needs"},
+  {id:"savings",     label:"Savings & investments",    bucket:"savings"},
+  {id:"unclassified",label:"Unclassified",             bucket:"none"}
+];
+function spendCat(id){
+  for(var i=0;i<SPEND.length;i++)if(SPEND[i].id===id)return SPEND[i];
+  return SPEND[SPEND.length-1];
+}
+/* A Splitwise category states a category outright, so it is evidence, not a
+   guess. The three it omits -- General, Services, Life - Other -- name
+   nothing, so they are left out and fall through to unclassified. */
+var SW_TO_SPEND={
+  "dining out":"dining","liquor":"dining",
+  "groceries":"groceries",
+  "rent":"housing","mortgage":"housing","home - other":"housing","cleaning":"housing",
+  "furniture":"household","household supplies":"household",
+  "car":"vehicle",
+  "gas/fuel":"transport","taxi":"transport","parking":"transport","bus/train":"transport",
+  "bicycle":"transport","transportation - other":"transport",
+  "hotel":"travel","plane":"travel",
+  "movies":"entertainment","music":"entertainment","sports":"entertainment",
+  "electricity":"utilities","utilities - other":"utilities","water":"utilities",
+  "heat/gas":"utilities","tv/phone/internet":"utilities",
+  "insurance":"insurance","medical expenses":"health","pets":"pets",
+  "gifts":"gifts","clothing":"clothing"
+};
+/* The app's own coarse picker, for expenses typed in here rather than imported. */
+var OWN_TO_SPEND={food:"dining",groceries:"groceries",home:"housing",
+  transport:"transport",travel:"travel",fun:"entertainment",utils:"utilities"};
+
+function normDesc(d){return String(d||"").toLowerCase().replace(/\s+/g," ").trim();}
+function rulesOf(gid){
+  var r=S.rules[gid];
+  return (r&&r.map)||{};
+}
+function catOf(e,rules){
+  var byName=rules[normDesc(e.desc)];
+  if(byName)return byName;
+  if(e.swCat){
+    var m=SW_TO_SPEND[String(e.swCat).toLowerCase()];
+    return m||"unclassified";
+  }
+  return OWN_TO_SPEND[e.category]||"unclassified";
+}
+function setRule(gid,key,cat){
+  var cur=S.rules[gid],map=cur&&cur.map?JSON.parse(JSON.stringify(cur.map)):{};
+  if(cat)map[key]=cat;else delete map[key];
+  put("rules",gid,{id:gid,gid:gid,map:map,updatedAt:Date.now()});
+}
+/* Every month that has expenses, newest first. */
+function monthsOf(ex){
+  var seen={},out=[],i;
+  for(i=0;i<ex.length;i++){
+    var m=String(ex[i].date).slice(0,7);
+    if(!seen[m]){seen[m]=1;out.push(m);}
+  }
+  out.sort();out.reverse();
+  return out;
+}
+function monthLabel(m){
+  var p=m.split("-");
+  return MONL[(+p[1])-1]+" "+p[0];
+}
+/* Totals for one month: per category, per 50/30/20 bucket, and the whole. */
+function monthBreakdown(ex,rules,month){
+  var cats={},buckets={needs:0,wants:0,savings:0,none:0},total=0,count=0,i;
+  for(i=0;i<ex.length;i++){
+    var e=ex[i];
+    if(String(e.date).slice(0,7)!==month)continue;
+    var id=catOf(e,rules);
+    cats[id]=(cats[id]||0)+e.cents;
+    buckets[spendCat(id).bucket]+=e.cents;
+    total+=e.cents;count++;
+  }
+  return {cats:cats,buckets:buckets,total:total,count:count};
+}
+/* Unclassified merchants for a group, biggest spend first. */
+function unclassifiedMerchants(ex,rules){
+  var byName={},i;
+  for(i=0;i<ex.length;i++){
+    var e=ex[i];
+    if(catOf(e,rules)!=="unclassified")continue;
+    var key=normDesc(e.desc)||"(no description)";
+    if(!byName[key])byName[key]={key:key,label:e.desc||"(no description)",cents:0,n:0};
+    byName[key].cents+=e.cents;byName[key].n++;
+  }
+  var out=[];
+  for(var k in byName)out.push(byName[k]);
+  out.sort(function(a,b){return b.cents-a.cents;});
+  return out;
+}
+
+/* ========================================================================
    Split maths
    ====================================================================== */
 function computeShares(total,mode,sel,raw,cur){
@@ -1005,7 +1147,7 @@ function importRecords(p,g,map){
     for(k=0;k<shares.length;k++)raw[shares[k].m]=(shares[k].cents/100).toFixed(2);
     out.push({kind:"expenses",id:id,
       body:{id:id,gid:g.id,desc:r.desc||"Imported expense",cents:r.cents,
-        category:swCategory(r.cat),date:r.date,note:"",mode:"exact",
+        category:swCategory(r.cat),swCat:r.cat,date:r.date,note:"",mode:"exact",
         payers:[{m:map[pi],cents:r.cents}],shares:shares,rawSplit:raw,createdAt:when}});
   }
   return out;
@@ -1059,11 +1201,18 @@ function readImportFile(input){
 function applyImport(){
   var F=S.sheet,g=F&&S.groups[F.gid];
   if(!F||!F.parsed||!g)return;
-  var recs=importRecords(F.parsed,g,F.map);
+  var all=importRecords(F.parsed,g,F.map),recs=[],skipped=0,i;
+  for(i=0;i<all.length;i++){
+    var cur=S.rec[all[i].kind][all[i].id];
+    /* Re-importing must not resurrect anything deleted here since last time. */
+    if(cur&&cur.d){skipped++;continue;}
+    recs.push(all[i]);
+  }
   if(!recs.length){toast("Nothing in that file could be imported.");return;}
   S.sheet=null;S.shown=200;
   putMany(recs);
-  toast("Imported "+recs.length+" entries. Encrypting and syncing them now…");
+  toast("Imported "+recs.length+" entries"
+    +(skipped?", leaving "+skipped+" you had deleted":"")+". Encrypting and syncing now…");
 }
 
 /* ========================================================================
@@ -1193,9 +1342,11 @@ function renderPane(){
   h+='</select><span>— sets whose side the “you owe / you lent” figures are from, on this device.</span></div></div>';
 
   h+='<div class="tabs" role="tablist">'
-    +tabBtn("expenses","Expenses")+tabBtn("balances","Balances")+tabBtn("activity","Activity")+'</div>';
+    +tabBtn("expenses","Expenses")+tabBtn("spending","Spending")
+    +tabBtn("balances","Balances")+tabBtn("activity","Activity")+'</div>';
 
   if(S.tab==="expenses")h+=renderExpenses(g,ex,me);
+  else if(S.tab==="spending")h+=renderSpending(g,ex);
   else if(S.tab==="balances")h+=renderBalances(g,n,me);
   else h+=renderActivity(g,ex,st);
 
@@ -1247,6 +1398,67 @@ function renderExpenses(g,ex,me){
     h+='<button class="btn block" data-act="showmore">Show earlier expenses — '
       +(ex.length-limit)+' older still hidden</button>';
   return h;
+}
+function renderSpending(g,ex){
+  var rules=rulesOf(g.id),months=monthsOf(ex),i;
+  if(!months.length)
+    return '<div class="card"><div class="empty"><h3>Nothing to break down yet</h3>'
+      +'<p>Once there are expenses, this shows where the money went, month by month.</p></div></div>';
+  var month=(S.month&&months.indexOf(S.month)>=0)?S.month:months[0];
+  var b=monthBreakdown(ex,rules,month);
+
+  /* twelve-month strip, oldest on the left */
+  var strip=months.slice(0,12).reverse(),tot=[],peak=1;
+  for(i=0;i<strip.length;i++){
+    tot.push(monthBreakdown(ex,rules,strip[i]).total);
+    if(tot[i]>peak)peak=tot[i];
+  }
+  var h='<div class="card" style="margin-bottom:14px"><div class="mhead"><span>Spending by month</span>'
+    +'<span class="mt">'+(months.length>12?"last 12 months":months.length
+      +(months.length===1?" month":" months"))+'</span></div><div class="bars">';
+  for(i=0;i<strip.length;i++)
+    h+='<button class="bar'+(strip[i]===month?" on":"")+'" data-act="pickmonth" data-m="'+strip[i]
+      +'" title="'+esc(monthLabel(strip[i])+" — "+fmt(tot[i],g.currency))+'">'
+      +'<span class="col" style="height:'+Math.max(2,Math.round(tot[i]/peak*100))+'%"></span>'
+      +'<span class="lab">'+MON[(+strip[i].split("-")[1])-1]+'</span></button>';
+  h+='</div></div>';
+
+  /* the chosen month */
+  h+='<div class="card"><div class="mhead"><span>'+esc(monthLabel(month))+'</span>'
+    +'<span class="mt num">'+esc(fmt(b.total,g.currency))+' · '+b.count
+    +(b.count===1?" expense":" expenses")+'</span></div>';
+
+  var named=b.buckets.needs+b.buckets.wants+b.buckets.savings;
+  var trio=[["needs","Needs","50"],["wants","Wants","30"],["savings","Savings","20"]];
+  h+='<div class="stats">';
+  for(i=0;i<trio.length;i++){
+    var v=b.buckets[trio[i][0]];
+    h+='<div class="stat"><div class="k">'+trio[i][1]+'</div><div class="v num">'
+      +(named?Math.round(v/named*100)+"%":"—")+'</div>'
+      +'<div class="s num">'+esc(fmt(v,g.currency))+' · target '+trio[i][2]+'%</div></div>';
+  }
+  h+='</div>';
+
+  var rows=[];
+  for(i=0;i<SPEND.length;i++)if(b.cats[SPEND[i].id])rows.push({c:SPEND[i],v:b.cats[SPEND[i].id]});
+  rows.sort(function(a,z){return z.v-a.v;});
+  var max=rows.length?rows[0].v:1;
+  for(i=0;i<rows.length;i++){
+    var r=rows[i];
+    h+='<div class="catrow"><span class="cname">'+esc(r.c.label)+'</span>'
+      +'<span class="track2"><span class="fill2'+(r.c.id==="unclassified"?" un":"")
+      +'" style="width:'+Math.max(2,Math.round(r.v/max*100))+'%"></span></span>'
+      +'<span class="camt num">'+esc(fmt(r.v,g.currency))+'</span>'
+      +'<span class="cpct num">'+(b.total?Math.round(r.v/b.total*100):0)+'%</span></div>';
+  }
+
+  var un=b.cats.unclassified||0;
+  if(un)
+    h+='<div class="sug"><span class="txt">'+esc(fmt(un,g.currency))+' of '+esc(monthLabel(month))
+      +' has no category yet, so it is left out of the needs and wants split above. '
+      +'Nothing is guessed from a merchant’s name.</span>'
+      +'<button class="btn" data-act="classify">Classify merchants</button></div>';
+  return h+'</div>';
 }
 function renderBalances(g,n,me){
   var i,max=0,ids=g.members.map(function(m){return m.id;});
@@ -1336,6 +1548,7 @@ function renderSheet(){
   else if(k==="gmenu")h=sheetGmenu();
   else if(k==="import")h=sheetImport();
   else if(k==="whoami")h=sheetWhoAmI();
+  else if(k==="classify")h=sheetClassify();
   else if(k==="share")h=sheetShare();
   root.innerHTML='<div class="scrim" data-act="scrim"><div class="sheet" role="dialog" aria-modal="true">'+h+'</div></div>';
 }
@@ -1535,6 +1748,37 @@ function sheetGmenu(){
    Guessing at the first member gets it right half the time, and when it is
    wrong every "you owe / you lent" figure reads backwards, headline
    included. So ask once, per device. */
+function sheetClassify(){
+  var g=S.groups[S.sheet.gid],i,j;
+  if(!g)return "";
+  var rules=rulesOf(g.id),list=unclassifiedMerchants(expensesOf(g.id),rules);
+  var h=shead("Classify merchants")+'<div class="sbody">';
+  if(!list.length)
+    return h+'<div class="empty"><h3>Everything is classified</h3>'
+      +'<p>No merchant in '+esc(g.name)+' is left without a category.</p></div></div>'
+      +'<div class="sfoot"><button class="btn" data-act="close">Close</button></div>';
+  var totalUn=0;
+  for(i=0;i<list.length;i++)totalUn+=list[i].cents;
+  h+='<p style="margin-top:0"><b>'+list.length+'</b> merchant names account for <b>'
+    +esc(fmt(totalUn,g.currency))+'</b> with no category. Choosing one applies it to every '
+    +'expense with that name, past and future. They are listed biggest first, so the '
+    +'early ones do most of the work.</p>';
+  var shown=Math.min(list.length,S.showCats);
+  for(i=0;i<shown;i++){
+    var m=list[i];
+    h+='<div class="maprow"><span>'+esc(m.label)
+      +'<br><span class="note" style="margin:0">'+esc(fmt(m.cents,g.currency))+' · '+m.n
+      +(m.n===1?" expense":" expenses")+'</span></span>'
+      +'<select class="inp" data-rule="'+esc(m.key)+'"><option value="">Choose a category…</option>';
+    for(j=0;j<SPEND.length-1;j++)
+      h+='<option value="'+SPEND[j].id+'">'+esc(SPEND[j].label)+'</option>';
+    h+='</select></div>';
+  }
+  if(list.length>shown)
+    h+='<button class="btn block" data-act="morecats" style="margin-top:10px">Show more — '
+      +(list.length-shown)+' still unclassified</button>';
+  return h+'</div><div class="sfoot"><button class="btn primary" data-act="close">Done</button></div>';
+}
 function sheetWhoAmI(){
   var g=S.groups[S.sheet.gid],i;
   if(!g)return "";
@@ -1798,6 +2042,9 @@ document.addEventListener("click",function(ev){
   if(a==="pick"){S.gid=t.getAttribute("data-id");lsSet("evenly.gid",S.gid);S.tab="expenses";S.shown=200;render();return;}
   if(a==="tab"){S.tab=t.getAttribute("data-tab");render();return;}
   if(a==="showmore"){S.shown+=300;render();return;}
+  if(a==="pickmonth"){S.month=t.getAttribute("data-m");render();return;}
+  if(a==="classify"){S.showCats=12;S.sheet={kind:"classify",gid:S.gid};render();return;}
+  if(a==="morecats"){S.showCats+=12;render();return;}
   if(a==="import"){S.sheet={kind:"import",gid:S.gid,parsed:null,map:[],error:null,busy:false};render();return;}
   if(a==="runimport"){applyImport();return;}
   if(a==="newgroup"){openGroup(null);return;}
@@ -1907,6 +2154,8 @@ document.addEventListener("change",function(ev){
   if(el.id==="csvfile"){readImportFile(el);return;}
   var mp=el.getAttribute("data-map");
   if(mp!==null){S.sheet.map[parseInt(mp,10)]=el.value;return;}
+  var rl=el.getAttribute("data-rule");
+  if(rl!==null){if(el.value)setRule(S.sheet.gid,rl,el.value);return;}
   var sel=el.getAttribute("data-sel");
   if(sel){
     var i=S.sheet.sel.indexOf(sel);

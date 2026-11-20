@@ -19,11 +19,13 @@
  * record it touched, so a client whose write loses still converges.
  */
 
-const KINDS = ["groups", "expenses", "settlements"];
+const KINDS = ["groups", "expenses", "settlements", "rules"];
 
 const MAX_RECORDS_PER_PUSH = 400;
-const MAX_BODY_BYTES = 512 * 1024;
-const MAX_RECORD_BYTES = 32 * 1024;
+const MAX_BODY_BYTES = 1536 * 1024;
+// A ledger's category rules are one record holding every merchant the
+// household has named, so this ceiling is well above an ordinary expense.
+const MAX_RECORD_BYTES = 256 * 1024;
 const MAX_RECORDS_PER_LEDGER = 20000;
 const PULL_PAGE = 400;
 
