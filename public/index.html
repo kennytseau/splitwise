@@ -1834,7 +1834,11 @@ function sheetClassify(){
   if(list.length>shown)
     h+='<button class="btn block" data-act="morecats" style="margin-top:10px">Show more — '
       +(list.length-shown)+' still unclassified</button>';
-  h+='<div class="field" style="margin-top:18px"><span class="flabel">Or paste a list</span>'
+  h+='<div class="field" style="margin-top:18px">'
+    +'<button class="btn block" data-act="exportun">Download the whole list as CSV</button>'
+    +'<p class="note" style="margin-top:6px">Every unclassified name with its total and a blank '
+    +'Category column. Fill it in anywhere, then paste the rows back below.</p></div>';
+  h+='<div class="field"><span class="flabel">Or paste a list</span>'
     +'<textarea class="inp" id="bulkrules" rows="4" placeholder="Woolies, Groceries'
     +'&#10;Kmart, Household goods"></textarea>'
     +'<button class="btn block" data-act="bulkrules" style="margin-top:8px">Apply pasted list</button>'
@@ -1846,6 +1850,21 @@ function sheetClassify(){
 /* Working down a thousand names one dropdown at a time is nobody's evening.
    Takes "name, category" per line, and also the exported rows as they are,
    so a list can be filled in elsewhere and applied in one go. */
+function exportUnclassified(){
+  var g=S.groups[S.sheet?S.sheet.gid:S.gid];
+  if(!g)return;
+  var list=unclassifiedMerchants(expensesOf(g.id),rulesOf(g.id)),d=cinfo(g.currency).d,i;
+  function q(v){v=String(v==null?"":v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;}
+  var lines=["Name,Expenses,Total,Category"];
+  for(i=0;i<list.length;i++)
+    lines.push([list[i].label,list[i].n,(list[i].cents/100).toFixed(d),""].map(q).join(","));
+  var blob=new Blob(["﻿"+lines.join("\r\n")],{type:"text/csv;charset=utf-8"});
+  var url=URL.createObjectURL(blob),a=document.createElement("a");
+  a.href=url;a.download=(g.name.replace(/[^A-Za-z0-9 _-]/g,"").trim().replace(/\s+/g,"-").toLowerCase()||"group")+"-unclassified.csv";
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  setTimeout(function(){URL.revokeObjectURL(url);},2000);
+  toast("Downloaded "+list.length+" names. Fill in the Category column, then paste the rows back.");
+}
 function applyBulkRules(gid,text){
   var lines=String(text).split(/\r\n|\n|\r/),cats=catsFor(gid),byLabel={},i;
   for(i=0;i<cats.length;i++)byLabel[cats[i].label.toLowerCase()]=cats[i].id;
@@ -2132,6 +2151,7 @@ document.addEventListener("click",function(ev){
   if(a==="pickmonth"){S.month=t.getAttribute("data-m");render();return;}
   if(a==="classify"){S.showCats=12;S.catQuery="";S.sheet={kind:"classify",gid:S.gid};render();return;}
   if(a==="morecats"){S.showCats+=12;render();return;}
+  if(a==="exportun"){exportUnclassified();return;}
   if(a==="bulkrules"){
     var ta=document.getElementById("bulkrules");
     if(!ta||!ta.value.trim()){toast("Paste some lines first.");return;}
