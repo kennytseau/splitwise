@@ -1876,8 +1876,11 @@ function applyBulkRules(gid,text){
     if(!line)continue;
     var f=splitCsvLine(line);
     if(f.length<2){bad++;continue;}
-    var name=normDesc(f[0]),cat=String(f[f.length-1]).trim().toLowerCase();
-    var id=byLabel[cat];
+    var name=normDesc(f[0]);
+    /* "Fees, tax & professional" has a comma in it, so try the whole tail as
+       the category first; an exported row falls back to its last column. */
+    var tail=f.slice(1).join(",").trim().toLowerCase();
+    var id=byLabel[tail]||byLabel[String(f[f.length-1]).trim().toLowerCase()];
     if(!name||!id){bad++;continue;}
     body.map[name]=id;ok++;
   }
