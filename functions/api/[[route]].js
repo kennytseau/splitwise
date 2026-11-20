@@ -19,7 +19,7 @@
  * record it touched, so a client whose write loses still converges.
  */
 
-const KINDS = ["groups", "expenses", "settlements", "rules"];
+const KINDS = ["groups", "expenses", "settlements", "rules", "series"];
 
 const MAX_RECORDS_PER_PUSH = 400;
 const MAX_BODY_BYTES = 1536 * 1024;

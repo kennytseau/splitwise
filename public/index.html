@@ -218,6 +218,24 @@ button.splitrow[aria-pressed="true"] .cell{color:var(--ink)}
 .tick::after{content:"";width:9px;height:5px;border-left:2px solid #fff;border-bottom:2px solid #fff;transform:rotate(-45deg) translateY(-1px);opacity:0}
 [aria-pressed="true"] .tick{background:var(--accent);border-color:var(--accent)}
 [aria-pressed="true"] .tick::after{opacity:1}
+.bigamt{display:flex;align-items:center;gap:10px;background:var(--surface-2);border:1px solid var(--line-strong);border-radius:12px;padding:8px 14px}
+.bigamt:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.bigamt .sym{font-size:17px;color:var(--muted);font-weight:600;flex:0 0 auto}
+.bigamt input{flex:1;min-width:0;border:0;background:none;outline:none;padding:4px 0;font-family:var(--font-display);font-size:30px;font-weight:600;letter-spacing:-.02em}
+/* The sheet carries bottom padding for the home indicator, and a sticky
+   element stops at the padding edge -- which left a strip of the form showing
+   underneath the bar. Pulling it down by that same amount sits it on the
+   sheet's bottom edge, and the bar's own padding keeps the clearance. */
+.sfoot.stack{display:block;position:sticky;bottom:calc(-1 * max(16px,env(safe-area-inset-bottom,0px)));background:var(--surface);padding:10px 18px max(16px,env(safe-area-inset-bottom,0px));box-shadow:0 -12px 18px -14px rgba(0,0,0,.45)}
+.sfoot.stack .btn.primary{width:100%;padding:14px;font-size:15.5px;border-radius:11px}
+.srow{display:flex;justify-content:space-between;align-items:center;margin-top:4px}
+.btn.ghost.danger{color:var(--debit)}
+.tundo{margin-left:14px;color:var(--bg);font-weight:700;text-decoration:underline}
+/* A sheet's action bar sits on the bottom edge, so a toast steps over it. */
+.sheeton .toast{bottom:calc(108px + env(safe-area-inset-bottom,0px))}
+.serow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)}
+.serow:last-of-type{border-bottom:0}
+.serow .sub{display:block;font-size:12.5px;color:var(--muted);margin-top:3px}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .chip{padding:6px 11px;border-radius:20px;border:1px solid var(--line-strong);font-size:13px}
 .chip[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
@@ -350,6 +368,23 @@ function shortDate(iso){
   var d=dparts(iso);
   return d.d+" "+MON[d.m]+(d.y!==new Date().getFullYear()?" "+d.y:"");
 }
+function isDate(s){return /^\d{4}-\d{2}-\d{2}$/.test(String(s||""));}
+function isoOf(p){
+  return p.y+"-"+String(p.m+1).padStart(2,"0")+"-"+String(p.d).padStart(2,"0");
+}
+/* Date arithmetic in UTC, so a daylight-saving change cannot shift a bill by a
+   day. These take and return plain YYYY-MM-DD, which also compares correctly
+   as a string. */
+function addDays(iso,n){
+  var p=dparts(iso),d=new Date(Date.UTC(p.y,p.m,p.d));
+  d.setUTCDate(d.getUTCDate()+n);
+  return isoOf({y:d.getUTCFullYear(),m:d.getUTCMonth(),d:d.getUTCDate()});
+}
+function addMonths(iso,n){
+  var p=dparts(iso),t=p.y*12+p.m+n,y=Math.floor(t/12),m=t-y*12;
+  var last=new Date(Date.UTC(y,m+1,0)).getUTCDate();   /* day 0 of the next month */
+  return isoOf({y:y,m:m,d:Math.min(p.d,last)});
+}
 function ago(ms){
   var s=Math.max(0,Math.round((Date.now()-ms)/1000));
   if(s<60)return "just now";
@@ -382,10 +417,10 @@ function icon(id){return '<span class="icn"><svg viewBox="0 0 24 24" aria-hidden
 /* ========================================================================
    State
    ====================================================================== */
-var KINDS=["groups","expenses","settlements","rules"];
+var KINDS=["groups","expenses","settlements","rules","series"];
 var S={
-  rec:{groups:{},expenses:{},settlements:{},rules:{}},  /* id -> {body, u, d} */
-  groups:{},expenses:{},settlements:{},rules:{},        /* live views, rebuilt from rec */
+  rec:{groups:{},expenses:{},settlements:{},rules:{},series:{}},  /* id -> {body, u, d} */
+  groups:{},expenses:{},settlements:{},rules:{},series:{},        /* live views, rebuilt from rec */
   month:null,                                    /* month shown on the Spending tab */
   showCats:12,                                   /* merchants listed in the classifier */
   catQuery:"",                                   /* classifier search box */
@@ -495,7 +530,7 @@ function persistNow(){
   return writeCache(dataKey(),{rec:S.rec,dirty:S.dirty,cursor:S.cursor});
 }
 function loadData(){
-  S.rec={groups:{},expenses:{},settlements:{},rules:{}};
+  S.rec={groups:{},expenses:{},settlements:{},rules:{},series:{}};
   S.dirty={};S.cursor=0;
   var key=dataKey();
   return idbGet(key).then(function(d){
@@ -523,6 +558,93 @@ function drop(kind,id){
   S.rec[kind][id]={body:{},u:Date.now(),d:1};
   S.dirty[kind+"/"+id]=1;
   rebuildViews();persist();render();scheduleSync();
+}
+
+/* ========================================================================
+   Repeating expenses
+
+   A series holds the expense to repeat and how often. Occurrences are made
+   on the device, not the server, which cannot read them -- so every device
+   has to arrive at exactly the same set. Two things make that safe:
+
+     * an occurrence's id is derived from the series and its date, so two
+       devices making the same one write the same record rather than two;
+     * each date is measured from the anchor, never from the occurrence
+       before it, so a 31st that lands on a short February does not drag
+       every later month onto the 28th.
+
+   Nothing is ever made for a date in the future, and stopping a series
+   leaves every occurrence it has already made alone -- those were real
+   expenses that were really owed.
+   ====================================================================== */
+var EVERY=[{id:"none",label:"Doesn’t repeat"},{id:"week",label:"Weekly"},
+  {id:"fortnight",label:"Fortnightly"},{id:"month",label:"Monthly"},
+  {id:"quarter",label:"Quarterly"},{id:"year",label:"Yearly"}];
+var EVERYNOTE={week:"every week",fortnight:"every fortnight",month:"every month",
+  quarter:"every three months",year:"every year"};
+var MAX_CATCHUP=400;             /* a weekly repeat left alone for seven years */
+
+function stepFrom(anchor,every,k){
+  if(every==="week")return addDays(anchor,7*k);
+  if(every==="fortnight")return addDays(anchor,14*k);
+  if(every==="month")return addMonths(anchor,k);
+  if(every==="quarter")return addMonths(anchor,3*k);
+  if(every==="year")return addMonths(anchor,12*k);
+  return null;
+}
+function occId(sid,when){return "r-"+sid+"-"+when;}
+function seriesOf(gid){
+  var out=[],id;
+  for(id in S.series)if(S.series[id].gid===gid)out.push(S.series[id]);
+  out.sort(function(a,b){
+    return (a.stopped?1:0)-(b.stopped?1:0)
+      || (a.tmpl.desc.toLowerCase()<b.tmpl.desc.toLowerCase()?-1:1);
+  });
+  return out;
+}
+/* The first date still to come, or null once a series has run out or been
+   stopped. */
+function nextDue(s){
+  var now=today(),k,when;
+  for(k=1;k<=MAX_CATCHUP;k++){
+    when=stepFrom(s.anchor,s.every,k);
+    if(!when)return null;
+    if(s.stopped&&when>=s.stopped)return null;
+    if(when>now)return when;
+  }
+  return null;
+}
+/* Called once the device has everything it is going to get -- after a sync,
+   or straight away when there is nothing to sync with. Running it on a
+   half-pulled ledger could rebuild an occurrence whose deletion has not
+   arrived yet. */
+function runSeries(){
+  var now=today(),made=0,sid,k,when,eid,s,t;
+  for(sid in S.series){
+    s=S.series[sid];
+    /* A bad anchor would be read as 1970 and owe four hundred months at once,
+       so a series without a real date is left alone. */
+    if(!s||!s.every||!isDate(s.anchor)||!s.tmpl||!S.groups[s.gid])continue;
+    for(k=1;k<=MAX_CATCHUP;k++){
+      when=stepFrom(s.anchor,s.every,k);
+      if(!when||when>now)break;
+      if(s.stopped&&when>=s.stopped)break;
+      eid=occId(sid,when);
+      /* An occurrence that was deleted stays deleted: its tombstone is still
+         in rec, so rec -- not the live view -- is what says whether this date
+         has been dealt with. */
+      if(S.rec.expenses[eid])continue;
+      t=s.tmpl;
+      S.rec.expenses[eid]={body:{id:eid,gid:s.gid,desc:t.desc,cents:t.cents,
+        category:t.category,date:when,note:t.note||"",mode:t.mode,payers:t.payers,
+        shares:t.shares,rawSplit:t.rawSplit||{},series:sid,createdAt:Date.now()},
+        u:Date.now(),d:0};
+      S.dirty["expenses/"+eid]=1;
+      made++;
+    }
+  }
+  if(made){rebuildViews();persist();render();scheduleSync();}
+  return made;
 }
 
 /* ========================================================================
@@ -678,6 +800,7 @@ async function sync(){
     S.lastSync=Date.now();
     persist();setStatus("ok");render();
     maybeAskWhoAmI();
+    runSeries();
   }catch(err){
     setStatus("off");
     if(err&&(err.code==="unauthorised"||err.status===401||err.status===404))
@@ -1296,11 +1419,14 @@ function applyImport(){
    Toast
    ====================================================================== */
 var toastT=null;
-function toast(msg){
+var toastAct=null;
+function toast(msg,label,fn){
   var r=document.getElementById("toastroot");
-  r.innerHTML='<div class="toast" role="status">'+esc(msg)+'</div>';
+  toastAct=fn||null;
+  r.innerHTML='<div class="toast" role="status">'+esc(msg)
+    +(label?'<button class="tundo" data-act="toastact">'+esc(label)+'</button>':"")+'</div>';
   if(toastT)clearTimeout(toastT);
-  toastT=setTimeout(function(){r.innerHTML="";},4600);
+  toastT=setTimeout(function(){r.innerHTML="";toastAct=null;},label?8000:4600);
 }
 
 /* ========================================================================
@@ -1484,6 +1610,7 @@ function renderExpenses(g,ex,me){
       +icon(e.category)
       +'<span class="rmain"><span class="rtitle">'+esc(e.desc)+'</span>'
       +'<span class="rmeta">'+esc(payer)+' · '+esc(cat(e.category).label)
+      +(e.series?" · repeats":"")
       +(e.note?" · "+esc(e.note):"")+'</span></span>'
       +'<span class="rside">'+side+'</span></button>';
   }
@@ -1644,13 +1771,19 @@ function render(){
 var sheetShown=null;
 function renderSheet(){
   var root=document.getElementById("sheetroot");
-  if(!S.sheet){root.innerHTML="";sheetShown=null;return;}
+  if(!S.sheet){
+    root.innerHTML="";sheetShown=null;
+    document.body.classList.remove("sheeton");
+    return;
+  }
+  document.body.classList.add("sheeton");
   var k=S.sheet.kind,h="";
   if(k==="expense")h=sheetExpense();
   else if(k==="group")h=sheetGroup();
   else if(k==="settle")h=sheetSettle();
   else if(k==="members")h=sheetMembers();
   else if(k==="gmenu")h=sheetGmenu();
+  else if(k==="series")h=sheetSeries();
   else if(k==="import")h=sheetImport();
   else if(k==="whoami")h=sheetWhoAmI();
   else if(k==="classify")h=sheetClassify();
@@ -1695,14 +1828,40 @@ function sheetExpense(){
   var res=computeShares(total,F.mode,F.sel,F.raw,cur);
   var h=shead(F.id?"Edit expense":"New expense")+'<div class="sbody">';
 
+  /* The amount leads. It is the one thing every expense has, it is what the
+     person reached for the phone to record, and on a phone the field you want
+     first should not be the one below the fold. */
+  h+='<div class="field"><label for="f-amt">Amount ('+esc(cur)+')</label>'
+    +'<div class="bigamt"><span class="sym">'+esc(cinfo(cur).s)+'</span>'
+    +'<input id="f-amt" data-f="amount" inputmode="decimal" value="'+esc(F.amount)
+    +'" placeholder="0'+(cinfo(cur).d?".00":"")+'"></div>'
+    +'<p class="note" style="margin-top:6px">A negative amount records money coming back — '
+    +'a refund or a rebate — and splits the same way.</p></div>';
   h+='<div class="field"><label for="f-desc">What was it for</label>'
     +'<input class="inp" id="f-desc" data-f="desc" value="'+esc(F.desc)+'" placeholder="Weekly shop" autocomplete="off"></div>';
-  h+='<div class="two"><div class="field"><label for="f-amt">Amount ('+esc(cur)+')</label>'
-    +'<input class="inp num" id="f-amt" data-f="amount" inputmode="decimal" value="'+esc(F.amount)+'" placeholder="0.00"></div>'
-    +'<div class="field"><label for="f-date">Date</label>'
-    +'<input class="inp" id="f-date" type="date" data-f="date" value="'+esc(F.date)+'"></div></div>'
-    +'<p class="note" style="margin-top:-8px">A negative amount records money coming back — '
-    +'a refund or a rebate — and splits the same way.</p>';
+  h+='<div class="field"><label for="f-date">Date</label>'
+    +'<input class="inp" id="f-date" type="date" data-f="date" value="'+esc(F.date)+'"></div>';
+
+  /* A new expense can start a repeat. One that came out of a repeat is managed
+     from the repeat itself, so it is not offered a second one. */
+  var fromS=F.id&&S.expenses[F.id]?S.expenses[F.id].series:null;
+  if(fromS&&S.series[fromS]){
+    h+='<div class="field"><span class="flabel">Repeats</span>'
+      +'<p class="note" style="margin-top:0">This came from a repeating expense — '
+      +esc(EVERYNOTE[S.series[fromS].every]||"")+'. Editing it here changes this one only.</p>'
+      +'<button class="btn block" data-act="series" style="margin-top:6px">Manage repeating expenses</button></div>';
+  }else{
+    h+='<div class="field"><span class="flabel">Repeats</span><div class="chips">';
+    for(i=0;i<EVERY.length;i++)
+      h+='<button class="chip" data-act="frepeat" data-v="'+EVERY[i].id+'" aria-pressed="'
+        +((F.every||"none")===EVERY[i].id)+'">'+esc(EVERY[i].label)+'</button>';
+    h+='</div>';
+    if(F.every&&F.every!=="none"&&isDate(F.date))
+      h+='<p class="note" style="margin-top:6px">Evenly puts this in again '
+        +esc(EVERYNOTE[F.every])+' — the next one on '
+        +esc(shortDate(stepFrom(F.date,F.every,1)))+' — until you stop it.</p>';
+    h+='</div>';
+  }
 
   h+='<div class="field"><span class="flabel">Category</span><div class="chips">';
   for(i=0;i<CATS.length;i++)
@@ -1770,13 +1929,16 @@ function sheetExpense(){
     +'<input class="inp" id="f-note" data-f="note" value="'+esc(F.note||"")
     +'" placeholder="Split differently this week" autocomplete="off"></div></div>';
 
+  /* The action sits full width at the foot and stays there while the sheet
+     scrolls, rather than being the last of three buttons pushed to the right
+     edge -- which on a narrow screen wrapped and read as an indent. */
   var blocked=!!res.err||!F.desc.trim()||(F.multiPay&&payTotal!==total);
-  h+='<div class="sfoot">'
-    +(F.id?'<button class="btn danger" data-act="delexp" data-id="'+esc(F.id)+'">'
-      +(S.confirm==="exp:"+F.id?"Tap again to delete":"Delete")+'</button>':"")
-    +'<button class="btn" data-act="close">Cancel</button>'
+  h+='<div class="sfoot stack">'
     +'<button class="btn primary" data-act="saveexp"'+(blocked?" disabled":"")+'>'
-    +(F.id?"Save changes":"Add expense")+'</button></div>';
+    +(F.id?"Save changes":"Add expense")+'</button>'
+    +'<div class="srow"><button class="btn ghost" data-act="close">Cancel</button>'
+    +(F.id?'<button class="btn ghost danger" data-act="delexp" data-id="'+esc(F.id)+'">Delete</button>':"")
+    +'</div></div>';
   return h;
 }
 function sheetGroup(){
@@ -1854,6 +2016,34 @@ function sheetMembers(){
     +'<div class="sfoot"><button class="btn primary" data-act="savemembers">Done</button></div>';
   return h;
 }
+function sheetSeries(){
+  var g=S.groups[S.sheet.gid],i;
+  if(!g)return "";
+  var list=seriesOf(g.id);
+  var h=shead("Repeating expenses")+'<div class="sbody">';
+  if(!list.length)
+    return h+'<div class="empty"><h3>Nothing repeats yet</h3>'
+      +'<p>Pick how often when you add an expense — monthly for the internet bill, '
+      +'say — and Evenly puts it in again on its own.</p></div></div>'
+      +'<div class="sfoot"><button class="btn" data-act="close">Close</button></div>';
+  h+='<p style="margin-top:0">Each of these goes in by itself once its date comes round. '
+    +'Stopping one changes nothing that has already been added — those were owed when '
+    +'they were added, and stay owed.</p>';
+  for(i=0;i<list.length;i++){
+    var s=list[i],due=nextDue(s),t=s.tmpl;
+    var who=t.payers.length===1?memName(g,t.payers[0].m)+" pays":"several people pay";
+    h+='<div class="serow"><span><b>'+esc(t.desc)+'</b> · '+esc(fmt(t.cents,g.currency))
+      +'<span class="sub">'+esc(EVERYNOTE[s.every]||s.every)+', '+esc(who)+'<br>'
+      +(s.stopped?'Stopped '+esc(shortDate(s.stopped))
+        :due?'Next on '+esc(shortDate(due)):'Nothing further due')
+      +'</span></span>'
+      +(s.stopped
+        ? '<button class="btn ghost" data-act="rmseries" data-id="'+esc(s.id)+'">Remove</button>'
+        : '<button class="btn" data-act="stopseries" data-id="'+esc(s.id)+'">Stop</button>')
+      +'</div>';
+  }
+  return h+'</div><div class="sfoot"><button class="btn" data-act="close">Close</button></div>';
+}
 function sheetGmenu(){
   var g=S.groups[S.sheet.gid];
   if(!g)return "";
@@ -1866,6 +2056,9 @@ function sheetGmenu(){
     +'<div class="field"><button class="btn block" data-act="classify">Merchant categories</button>'
     +'<p class="note" style="margin-top:6px">Set or change which category each merchant name '
     +'falls under.</p></div>'
+    +'<div class="field"><button class="btn block" data-act="series">Repeating expenses</button>'
+    +'<p class="note" style="margin-top:6px">Bills that go in on their own — see what is set '
+    +'up, or stop one.</p></div>'
     +'<div class="field"><button class="btn block" data-act="import">Import from a Splitwise export</button>'
     +'<p class="note" style="margin-top:6px">Brings across expenses, who paid, uneven splits and settlements.</p></div>'
     +'<div class="field"><button class="btn danger block" data-act="delgroup" data-id="'+esc(g.id)+'">'
@@ -2099,12 +2292,12 @@ function openExpense(id){
     }
     S.sheet={kind:"expense",gid:g.id,id:e.id,desc:e.desc,
       amount:(e.cents/100).toFixed(cinfo(g.currency).d),date:e.date,category:e.category,
-      note:e.note||"",mode:e.mode||"equal",sel:sel,raw:raw,
+      note:e.note||"",mode:e.mode||"equal",sel:sel,raw:raw,every:"none",
       multiPay:e.payers.length>1,payer:e.payers[0]?e.payers[0].m:me,payerOrder:order,payRaw:payRaw};
   }else{
     var all=g.members.map(function(m){return m.id;});
     S.sheet={kind:"expense",gid:g.id,id:null,desc:"",amount:"",date:today(),category:"food",
-      note:"",mode:"equal",sel:all,raw:{},multiPay:false,payer:me||all[0],
+      note:"",mode:"equal",sel:all,raw:{},every:"none",multiPay:false,payer:me||all[0],
       payerOrder:all.slice(),payRaw:{}};
   }
   S.confirm=null;render();
@@ -2139,12 +2332,29 @@ function saveExpense(){
   if(!payers.length){toast("Say who paid.");return;}
   var raw={};
   for(i=0;i<F.sel.length;i++)if(F.raw[F.sel[i]]!=null)raw[F.sel[i]]=F.raw[F.sel[i]];
-  var id=F.id||uid();
-  put("expenses",id,{id:id,gid:g.id,desc:F.desc.trim(),cents:total,category:F.category,
+  var id=F.id||uid(),prev=F.id?S.expenses[F.id]:null;
+  var body={id:id,gid:g.id,desc:F.desc.trim(),cents:total,category:F.category,
     date:F.date,note:F.note.trim(),mode:F.mode,payers:payers,shares:res.shares,rawSplit:raw,
-    createdAt:(F.id&&S.expenses[F.id]?S.expenses[F.id].createdAt:Date.now())});
+    createdAt:prev?prev.createdAt:Date.now()};
+  if(prev&&prev.series)body.series=prev.series;
+  /* The expense being saved is the first of the run, so the series counts from
+     its date and makes nothing until the next one falls due. */
+  var every=(F.every&&F.every!=="none"&&!body.series&&isDate(F.date))?F.every:null;
+  if(every){
+    var sid=uid();
+    body.series=sid;
+    put("series",sid,{id:sid,gid:g.id,every:every,anchor:F.date,stopped:null,
+      createdAt:Date.now(),
+      tmpl:{desc:body.desc,cents:body.cents,category:body.category,note:body.note,
+        mode:body.mode,payers:body.payers,shares:body.shares,rawSplit:body.rawSplit}});
+  }
+  put("expenses",id,body);
   S.sheet=null;S.confirm=null;render();
-  toast(F.id?"Expense updated.":"Added “"+F.desc.trim()+"”.");
+  /* A repeat dated back a few months owes the dates in between straight away,
+     rather than when the app is next opened. */
+  if(every)runSeries();
+  toast(every?"Added “"+body.desc+"”, and again "+EVERYNOTE[every]+" from now on."
+    :F.id?"Expense updated.":"Added “"+body.desc+"”.");
 }
 function saveGroup(){
   var F=S.sheet,i,members=[];
@@ -2348,10 +2558,42 @@ document.addEventListener("click",function(ev){
     if(!c3.members.length){toast("A group needs at least one person.");render();return;}
     put("groups",g3.id,c3);return;
   }
+  /* One tap, undone from the toast. Asking for a second tap meant tapping a
+     button whose label had just grown, so it had moved out from under the
+     thumb -- and the thing underneath it was Cancel. */
   if(a==="delexp"){
-    var eid=t.getAttribute("data-id");
-    if(S.confirm!=="exp:"+eid){S.confirm="exp:"+eid;render();return;}
-    S.confirm=null;S.sheet=null;drop("expenses",eid);toast("Expense deleted.");return;
+    var eid=t.getAttribute("data-id"),gone=S.expenses[eid];
+    if(!gone)return;
+    var copy=JSON.parse(JSON.stringify(gone));
+    S.sheet=null;S.confirm=null;
+    drop("expenses",eid);
+    toast("Deleted “"+copy.desc+"”.","Undo",function(){
+      put("expenses",copy.id,copy);
+      toast("Put back.");
+    });
+    return;
+  }
+  if(a==="toastact"){
+    var act=toastAct;toastAct=null;
+    document.getElementById("toastroot").innerHTML="";
+    if(act)act();
+    return;
+  }
+  if(a==="frepeat"){S.sheet.every=t.getAttribute("data-v");render();return;}
+  if(a==="series"){S.sheet={kind:"series",gid:S.gid};render();return;}
+  if(a==="stopseries"){
+    var ssid=t.getAttribute("data-id"),ser=S.series[ssid];
+    if(!ser)return;
+    var scopy=JSON.parse(JSON.stringify(ser));
+    scopy.stopped=today();scopy.updatedAt=Date.now();
+    put("series",ssid,scopy);
+    toast("Stopped. Nothing further goes in.");
+    return;
+  }
+  if(a==="rmseries"){
+    drop("series",t.getAttribute("data-id"));
+    toast("Taken off the list. The expenses it added are still there.");
+    return;
   }
   if(a==="delgroup"){
     var gid=t.getAttribute("data-id");
@@ -2489,7 +2731,7 @@ loadData().then(function(){
   setStatus(S.space?"busy":"local");
   render();
   maybeAskWhoAmI();
-  if(!S.space)return;
+  if(!S.space){runSeries();return;}
   if(!(self.crypto&&self.crypto.subtle)){
     setStatus("off");
     toast("Shared spaces need a secure connection. Open this app over https.");

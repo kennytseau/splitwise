@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS ledgers (
 
 CREATE TABLE IF NOT EXISTS records (
   ledger  TEXT    NOT NULL,
-  kind    TEXT    NOT NULL,           -- groups | expenses | settlements
+  kind    TEXT    NOT NULL,           -- groups | expenses | settlements | rules | series
   id      TEXT    NOT NULL,
   body    TEXT    NOT NULL,           -- the record as JSON
   updated INTEGER NOT NULL,           -- client clock, used for last-writer-wins
