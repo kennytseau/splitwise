@@ -1002,6 +1002,26 @@ function monthBreakdown(ex,rules,month,gid){
   }
   return {cats:cats,buckets:buckets,total:total,count:count};
 }
+/* Every merchant, the unclassified ones first. The screen is for changing a
+   category as much as setting one: a rule that can only be reached while
+   something is still unclassified is a rule that cannot be corrected. */
+function allMerchants(ex,rules){
+  var byName={},i;
+  for(i=0;i<ex.length;i++){
+    var e=ex[i],key=normDesc(e.desc)||"(no description)";
+    if(!byName[key])
+      byName[key]={key:key,label:e.desc||"(no description)",cents:0,n:0,cat:catOf(e,rules)};
+    byName[key].cents+=e.cents;byName[key].n++;
+  }
+  var out=[];
+  for(var k in byName)out.push(byName[k]);
+  out.sort(function(a,b){
+    var au=a.cat==="unclassified"?0:1,bu=b.cat==="unclassified"?0:1;
+    if(au!==bu)return au-bu;
+    return b.cents-a.cents;
+  });
+  return out;
+}
 /* Unclassified merchants for a group, biggest spend first. */
 function unclassifiedMerchants(ex,rules){
   var byName={},i;
@@ -1812,6 +1832,9 @@ function sheetGmenu(){
     +'<div class="field"><button class="btn block" data-act="editgroup">Rename group or change currency</button></div>'
     +'<div class="field"><button class="btn block" data-act="export">Download expenses as CSV</button>'
     +'<p class="note" style="margin-top:6px">One row per expense, with each person’s share.</p></div>'
+    +'<div class="field"><button class="btn block" data-act="classify">Merchant categories</button>'
+    +'<p class="note" style="margin-top:6px">Set or change which category each merchant name '
+    +'falls under.</p></div>'
     +'<div class="field"><button class="btn block" data-act="import">Import from a Splitwise export</button>'
     +'<p class="note" style="margin-top:6px">Brings across expenses, who paid, uneven splits and settlements.</p></div>'
     +'<div class="field"><button class="btn danger block" data-act="delgroup" data-id="'+esc(g.id)+'">'
@@ -1826,30 +1849,30 @@ function sheetGmenu(){
 function sheetClassify(){
   var g=S.groups[S.sheet.gid],i,j;
   if(!g)return "";
-  var rules=rulesOf(g.id),full=unclassifiedMerchants(expensesOf(g.id),rules);
-  var h=shead("Classify merchants")+'<div class="sbody">';
+  var rules=rulesOf(g.id),full=allMerchants(expensesOf(g.id),rules);
+  var h=shead("Merchant categories")+'<div class="sbody">';
   if(!full.length)
-    return h+'<div class="empty"><h3>Everything is classified</h3>'
-      +'<p>No merchant in '+esc(g.name)+' is left without a category.</p></div></div>'
+    return h+'<div class="empty"><h3>Nothing to categorise yet</h3>'
+      +'<p>Once '+esc(g.name)+' has expenses, every merchant name shows up here.</p></div></div>'
       +'<div class="sfoot"><button class="btn" data-act="close">Close</button></div>';
   /* With a thousand names, ranking by spend is not enough to find one. */
   var q=normDesc(S.catQuery||"");
   var list=q?full.filter(function(m){return m.key.indexOf(q)>=0;}):full;
-  var totalUn=0,totalAll=0;
+  var totalUn=0,uncCount=0,uncTotal=0;
   for(i=0;i<list.length;i++)totalUn+=list[i].cents;
-  for(i=0;i<full.length;i++)totalAll+=full[i].cents;
-  h+='<p style="margin-top:0"><b>'+full.length+'</b> merchant names account for <b>'
-    +esc(fmt(totalAll,g.currency))+'</b> with no category. Choosing one applies it to every '
-    +'expense with that name, past and future. They are listed biggest first, so the '
-    +'early ones do most of the work.</p>';
+  for(i=0;i<full.length;i++)if(full[i].cat==="unclassified"){uncCount++;uncTotal+=full[i].cents;}
+  h+='<p style="margin-top:0">'+(uncCount
+    ? '<b>'+uncCount+'</b> of '+full.length+' names have no category, worth <b>'
+      +esc(fmt(uncTotal,g.currency))+'</b>, and are listed first.'
+    : 'All <b>'+full.length+'</b> names are categorised.')
+    +' A category applies to every expense with that name, past and future, and changing '
+    +'one here changes them all.</p>';
   h+='<div class="field"><input class="inp" id="catsearch" value="'+esc(S.catQuery||"")
     +'" placeholder="Search a name — try dior, or watch" autocomplete="off"></div>';
   if(q)
     h+='<p class="note" style="margin-top:-6px">'+(list.length?list.length+' matching '
       +(list.length===1?"name":"names")+' · '+esc(fmt(totalUn,g.currency)):"Nothing matches that")+'</p>';
-  var opts=catsFor(g.id),optHtml="";
-  for(j=0;j<opts.length-1;j++)
-    optHtml+='<option value="'+esc(opts[j].id)+'">'+esc(opts[j].label)+'</option>';
+  var opts=catsFor(g.id);
 
   h+='<div class="field"><span class="flabel">Add a category of your own</span>'
     +'<div class="two"><input class="inp" id="newcat" placeholder="Luxury items" autocomplete="off">'
@@ -1864,16 +1887,20 @@ function sheetClassify(){
     h+='<div class="maprow"><span>'+esc(m.label)
       +'<br><span class="note" style="margin:0">'+esc(fmt(m.cents,g.currency))+' · '+m.n
       +(m.n===1?" expense":" expenses")+'</span></span>'
-      +'<select class="inp" data-rule="'+esc(m.key)+'"><option value="">Choose a category…</option>'
-      +optHtml+'</select></div>';
+      +'<select class="inp" data-rule="'+esc(m.key)+'">'
+      +'<option value=""'+(m.cat==="unclassified"?" selected":"")+'>Choose a category…</option>';
+    for(j=0;j<opts.length-1;j++)
+      h+='<option value="'+esc(opts[j].id)+'"'+(opts[j].id===m.cat?" selected":"")+'>'
+        +esc(opts[j].label)+'</option>';
+    h+='</select></div>';
   }
   if(list.length>shown)
     h+='<button class="btn block" data-act="morecats" style="margin-top:10px">Show more — '
-      +(list.length-shown)+' still unclassified</button>';
+      +(list.length-shown)+' more</button>';
   h+='<div class="field" style="margin-top:18px">'
     +'<button class="btn block" data-act="exportun">Download the whole list as CSV</button>'
-    +'<p class="note" style="margin-top:6px">Every unclassified name with its total and a blank '
-    +'Category column. Fill it in anywhere, then paste the rows back below.</p></div>';
+    +'<p class="note" style="margin-top:6px">Every name with its total and whatever category it '
+    +'has now. Edit it anywhere, then paste the rows back below.</p></div>';
   h+='<div class="field"><span class="flabel">Or paste a list</span>'
     +'<textarea class="inp" id="bulkrules" rows="4" placeholder="Woolies, Groceries'
     +'&#10;Kmart, Household goods"></textarea>'
@@ -1889,11 +1916,14 @@ function sheetClassify(){
 function exportUnclassified(){
   var g=S.groups[S.sheet?S.sheet.gid:S.gid];
   if(!g)return;
-  var list=unclassifiedMerchants(expensesOf(g.id),rulesOf(g.id)),d=cinfo(g.currency).d,i;
+  /* Everything, with whatever category it already has, so the file is a
+     round trip: export, edit anywhere, paste back. */
+  var list=allMerchants(expensesOf(g.id),rulesOf(g.id)),d=cinfo(g.currency).d,i;
   function q(v){v=String(v==null?"":v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;}
   var lines=["Name,Expenses,Total,Category"];
   for(i=0;i<list.length;i++)
-    lines.push([list[i].label,list[i].n,(list[i].cents/100).toFixed(d),""].map(q).join(","));
+    lines.push([list[i].label,list[i].n,(list[i].cents/100).toFixed(d),
+      list[i].cat==="unclassified"?"":catInfo(g.id,list[i].cat).label].map(q).join(","));
   var blob=new Blob(["﻿"+lines.join("\r\n")],{type:"text/csv;charset=utf-8"});
   var url=URL.createObjectURL(blob),a=document.createElement("a");
   a.href=url;a.download=(g.name.replace(/[^A-Za-z0-9 _-]/g,"").trim().replace(/\s+/g,"-").toLowerCase()||"group")+"-unclassified.csv";
@@ -2328,7 +2358,8 @@ document.addEventListener("change",function(ev){
   var mp=el.getAttribute("data-map");
   if(mp!==null){S.sheet.map[parseInt(mp,10)]=el.value;return;}
   var rl=el.getAttribute("data-rule");
-  if(rl!==null){if(el.value)setRule(S.sheet.gid,rl,el.value);return;}
+  /* An empty choice clears the rule, so a category can be taken back off. */
+  if(rl!==null){setRule(S.sheet.gid,rl,el.value);return;}
   var sel=el.getAttribute("data-sel");
   if(sel){
     var i=S.sheet.sel.indexOf(sel);
