@@ -953,10 +953,16 @@ function catOf(e,rules){
   }
   return OWN_TO_SPEND[e.category]||"unclassified";
 }
+/* Rewrite the whole record, not just the part being changed: the rules and
+   the household's own categories share it, and rebuilding it from the map
+   alone silently discards the categories. */
 function setRule(gid,key,cat){
-  var cur=S.rules[gid],map=cur&&cur.map?JSON.parse(JSON.stringify(cur.map)):{};
-  if(cat)map[key]=cat;else delete map[key];
-  put("rules",gid,{id:gid,gid:gid,map:map,updatedAt:Date.now()});
+  var cur=S.rules[gid];
+  var body=cur?JSON.parse(JSON.stringify(cur)):{};
+  if(!body.map)body.map={};
+  if(cat)body.map[key]=cat;else delete body.map[key];
+  body.id=gid;body.gid=gid;body.updatedAt=Date.now();
+  put("rules",gid,body);
 }
 /* Every month that has expenses, newest first. */
 function monthsOf(ex){
