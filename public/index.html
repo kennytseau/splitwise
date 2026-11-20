@@ -50,6 +50,7 @@
 }
 *{box-sizing:border-box}
 html,body{height:100%}
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font-ui);font-size:15px;line-height:1.5;
   -webkit-font-smoothing:antialiased;padding-bottom:env(safe-area-inset-bottom,0px)}
 body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);background:var(--surface);z-index:30}
@@ -57,7 +58,10 @@ img{max-width:100%}
 [hidden]{display:none!important}
 h1,h2,h3{font-family:var(--font-display);font-weight:600;text-wrap:balance;margin:0;letter-spacing:-.01em}
 button{font:inherit;color:inherit;cursor:pointer;border:0;background:none}
-input,select,textarea{font:inherit;color:inherit}
+/* 16px is the floor for anything you can focus: Safari on iOS zooms the page
+   in when you tap a smaller control and never zooms back out, which leaves the
+   layout wider than the screen for the rest of the visit. */
+input,select,textarea{font:inherit;color:inherit;font-size:16px}
 :focus-visible{outline:2px solid var(--accent-ink);outline-offset:2px;border-radius:6px}
 .num{font-variant-numeric:tabular-nums}
 .wrap{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));max-width:1140px;margin:0 auto}
@@ -76,13 +80,17 @@ input,select,textarea{font:inherit;color:inherit}
 .sync.busy .led{background:var(--accent)}
 .sync.off .led{background:var(--debit)}
 .sync:hover{border-color:var(--accent);color:var(--ink)}
+/* Narrow enough and the balance wraps to its own line; pushed right it floats
+   away from everything else, so let it sit under the mark instead. */
+@media (max-width:620px){.topbar .wrap{gap:10px 12px}.overall{margin-left:0;width:100%;justify-content:flex-start}}
 
 .notice{background:var(--accent-soft);border-bottom:1px solid var(--line);font-size:13px}
 .notice .wrap{padding-block:8px}
 
 /* shell */
 .shell{display:grid;grid-template-columns:260px minmax(0,1fr);gap:26px;padding-block:22px 48px;align-items:start}
-@media (max-width:900px){.shell{grid-template-columns:minmax(0,1fr);gap:16px}}
+@media (max-width:900px){.shell{grid-template-columns:minmax(0,1fr);gap:16px;
+  padding-bottom:calc(72px + env(safe-area-inset-bottom,0px))}}
 
 /* rail */
 .rail{position:sticky;top:calc(env(safe-area-inset-top,0px) + 68px);display:flex;flex-direction:column;gap:6px;min-width:0}
@@ -123,11 +131,16 @@ input,select,textarea{font:inherit;color:inherit}
 .stat .s{font-size:11.5px;color:var(--faint);margin-top:1px}
 .pos{color:var(--credit)} .neg{color:var(--debit)} .zero{color:var(--neutral)}
 .whoami{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--muted);padding:11px 18px;border-top:1px solid var(--line);background:var(--surface-2);flex-wrap:wrap}
-.whoami select{background:var(--surface);border:1px solid var(--line-strong);border-radius:8px;padding:4px 8px;font-size:13px}
+.whoami select{background:var(--surface);border:1px solid var(--line-strong);border-radius:8px;padding:5px 8px;min-height:36px}
 
 /* tabs */
-.tabs{display:flex;gap:2px;margin:18px 0 12px;border-bottom:1px solid var(--line)}
-.tab{padding:9px 14px;font-size:14px;font-weight:500;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px}
+/* Four tabs do not fit across a 320px screen, so the strip scrolls rather
+   than pushing the whole page sideways. */
+.tabs{display:flex;gap:2px;margin:18px 0 12px;border-bottom:1px solid var(--line);
+  overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{flex:0 0 auto;white-space:nowrap;padding:9px 14px;font-size:14px;font-weight:500;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px}
+@media (max-width:420px){.tab{padding:9px 10px}}
 .tab[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent)}
 .tab:hover{color:var(--ink)}
 
@@ -199,16 +212,33 @@ input,select,textarea{font:inherit;color:inherit}
 /* sheet */
 .scrim{position:fixed;inset:0;background:rgba(10,20,20,.45);z-index:40;display:flex;align-items:flex-end;justify-content:center;overflow-y:auto}
 @media (min-width:640px){.scrim{align-items:center;padding:24px}}
-.sheet{background:var(--surface);width:100%;max-width:520px;border-radius:16px 16px 0 0;box-shadow:0 -8px 40px rgba(0,0,0,.3);max-height:92vh;overflow-y:auto;
+.sheet{background:var(--surface);width:100%;max-width:520px;border-radius:16px 16px 0 0;box-shadow:0 -8px 40px rgba(0,0,0,.3);max-height:92vh;max-height:92dvh;overflow-y:auto;
   padding-bottom:max(16px,env(safe-area-inset-bottom,0px))}
-@media (min-width:640px){.sheet{border-radius:16px;max-height:86vh}}
+/* dvh, not vh: on iOS vh measures the viewport with the browser chrome hidden,
+   so a vh-tall sheet runs on under the toolbar and takes its action bar with it. */
+@media (min-width:640px){.sheet{border-radius:16px;max-height:86vh;max-height:86dvh}}
 .shead{display:flex;align-items:center;gap:12px;padding:16px 18px 12px;position:sticky;top:0;background:var(--surface);border-bottom:1px solid var(--line);z-index:1}
 .shead h2{font-size:18px;flex:1;min-width:0}
 .sbody{padding:16px 18px}
 .sfoot{display:flex;gap:10px;justify-content:flex-end;padding:0 18px 16px;flex-wrap:wrap}
 .field{margin-bottom:14px}
 .field > label,.flabel{display:block;font-size:11.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--faint);font-weight:600;margin-bottom:5px}
-.inp{width:100%;padding:9px 11px;border:1px solid var(--line-strong);border-radius:9px;background:var(--bg)}
+.inp{width:100%;max-width:100%;min-width:0;padding:10px 12px;border:1px solid var(--line-strong);
+  border-radius:10px;background:var(--bg);line-height:1.35;appearance:none;-webkit-appearance:none}
+/* iOS draws its own box for date and select controls and puts the padding
+   where it likes, so left alone they come out wider and taller than the text
+   fields beside them. appearance:none hands the box back to this stylesheet,
+   and a min-height rather than padding sets the size, so every control on a
+   form lines up no matter what the browser does inside it. */
+input.inp,select.inp{min-height:48px}
+input.inp[type="date"]{text-align:left;display:block;height:auto}
+/* The value inside a date field is its own shadow element, and iOS centres it
+   unless told otherwise -- which is what made the date read differently from
+   every other field on the form. */
+input.inp[type="date"]::-webkit-date-and-time-value{text-align:left;margin:0}
+input.inp[type="date"]::-webkit-datetime-edit{padding:0}
+select.inp{padding-right:36px;background-repeat:no-repeat;background-position:right 13px center;background-size:12px 8px;
+  background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.4 6 6.4l5-5' fill='none' stroke='%237E9191' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")}
 .inp:focus{border-color:var(--accent-ink);outline:none}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 @media (max-width:460px){.two{grid-template-columns:1fr}}
@@ -223,7 +253,7 @@ button.splitrow[aria-pressed="true"] .cell{color:var(--ink)}
 .tick::after{content:"";width:9px;height:5px;border-left:2px solid #fff;border-bottom:2px solid #fff;transform:rotate(-45deg) translateY(-1px);opacity:0}
 [aria-pressed="true"] .tick{background:var(--accent);border-color:var(--accent)}
 [aria-pressed="true"] .tick::after{opacity:1}
-.bigamt{display:flex;align-items:center;gap:10px;background:var(--surface-2);border:1px solid var(--line-strong);border-radius:12px;padding:8px 14px}
+.bigamt{display:flex;align-items:center;gap:10px;background:var(--surface-2);border:1px solid var(--line-strong);border-radius:12px;padding:9px 12px}
 .bigamt:focus-within{border-color:var(--accent-ink);box-shadow:0 0 0 3px var(--accent-soft)}
 .bigamt .sym{font-size:17px;color:var(--muted);font-weight:600;flex:0 0 auto}
 .bigamt input{flex:1;min-width:0;border:0;background:none;outline:none;padding:4px 0;font-family:var(--font-display);font-size:30px;font-weight:600;letter-spacing:-.02em}
@@ -241,8 +271,8 @@ button.splitrow[aria-pressed="true"] .cell{color:var(--ink)}
 .serow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)}
 .serow:last-of-type{border-bottom:0}
 .serow .sub{display:block;font-size:12.5px;color:var(--muted);margin-top:3px}
-.pickrow{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;width:100%;padding:13px 12px;border:1px solid var(--line-strong);border-radius:10px;background:var(--bg);text-align:left}
-.pickrow .pk{font-size:15px}
+.pickrow{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;width:100%;min-height:48px;padding:10px 12px;border:1px solid var(--line-strong);border-radius:10px;background:var(--bg);text-align:left}
+.pickrow .pk{font-size:16px}
 .pickrow .pv{color:var(--muted);text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pc{color:var(--faint);font-size:19px;line-height:1}
 .opts{border-top:1px solid var(--line)}
