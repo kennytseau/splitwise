@@ -380,6 +380,7 @@ var S={
   groups:{},expenses:{},settlements:{},rules:{},        /* live views, rebuilt from rec */
   month:null,                                    /* month shown on the Spending tab */
   showCats:12,                                   /* merchants listed in the classifier */
+  catQuery:"",                                   /* classifier search box */
   dirty:{},                                      /* "kind/id" -> 1, awaiting push */
   space:null,                                    /* {id, key} when shared */
   cursor:0,
@@ -1789,18 +1790,27 @@ function sheetGmenu(){
 function sheetClassify(){
   var g=S.groups[S.sheet.gid],i,j;
   if(!g)return "";
-  var rules=rulesOf(g.id),list=unclassifiedMerchants(expensesOf(g.id),rules);
+  var rules=rulesOf(g.id),full=unclassifiedMerchants(expensesOf(g.id),rules);
   var h=shead("Classify merchants")+'<div class="sbody">';
-  if(!list.length)
+  if(!full.length)
     return h+'<div class="empty"><h3>Everything is classified</h3>'
       +'<p>No merchant in '+esc(g.name)+' is left without a category.</p></div></div>'
       +'<div class="sfoot"><button class="btn" data-act="close">Close</button></div>';
-  var totalUn=0;
+  /* With a thousand names, ranking by spend is not enough to find one. */
+  var q=normDesc(S.catQuery||"");
+  var list=q?full.filter(function(m){return m.key.indexOf(q)>=0;}):full;
+  var totalUn=0,totalAll=0;
   for(i=0;i<list.length;i++)totalUn+=list[i].cents;
-  h+='<p style="margin-top:0"><b>'+list.length+'</b> merchant names account for <b>'
-    +esc(fmt(totalUn,g.currency))+'</b> with no category. Choosing one applies it to every '
+  for(i=0;i<full.length;i++)totalAll+=full[i].cents;
+  h+='<p style="margin-top:0"><b>'+full.length+'</b> merchant names account for <b>'
+    +esc(fmt(totalAll,g.currency))+'</b> with no category. Choosing one applies it to every '
     +'expense with that name, past and future. They are listed biggest first, so the '
     +'early ones do most of the work.</p>';
+  h+='<div class="field"><input class="inp" id="catsearch" value="'+esc(S.catQuery||"")
+    +'" placeholder="Search a name — try dior, or watch" autocomplete="off"></div>';
+  if(q)
+    h+='<p class="note" style="margin-top:-6px">'+(list.length?list.length+' matching '
+      +(list.length===1?"name":"names")+' · '+esc(fmt(totalUn,g.currency)):"Nothing matches that")+'</p>';
   var opts=catsFor(g.id),optHtml="";
   for(j=0;j<opts.length-1;j++)
     optHtml+='<option value="'+esc(opts[j].id)+'">'+esc(opts[j].label)+'</option>';
@@ -2090,7 +2100,7 @@ document.addEventListener("click",function(ev){
   if(a==="tab"){S.tab=t.getAttribute("data-tab");render();return;}
   if(a==="showmore"){S.shown+=300;render();return;}
   if(a==="pickmonth"){S.month=t.getAttribute("data-m");render();return;}
-  if(a==="classify"){S.showCats=12;S.sheet={kind:"classify",gid:S.gid};render();return;}
+  if(a==="classify"){S.showCats=12;S.catQuery="";S.sheet={kind:"classify",gid:S.gid};render();return;}
   if(a==="morecats"){S.showCats+=12;render();return;}
   if(a==="addcat"){
     var nmEl=document.getElementById("newcat"),bkEl=document.getElementById("newcatbucket");
@@ -2185,10 +2195,23 @@ document.addEventListener("click",function(ev){
   }
 });
 
+var catT=null;                       /* debounce for the classifier search box */
 document.addEventListener("input",function(ev){
   var el=ev.target;
   if(el.id==="mesel")return;
   if(!S.sheet)return;
+  if(el.id==="catsearch"){
+    S.catQuery=el.value;
+    S.showCats=12;
+    if(catT)clearTimeout(catT);
+    var caret=el.selectionStart;
+    catT=setTimeout(function(){
+      catT=null;renderSheet();
+      var again=document.getElementById("catsearch");
+      if(again){again.focus();try{again.setSelectionRange(caret,caret);}catch(e){}}
+    },220);
+    return;
+  }
   var f=el.getAttribute("data-f");
   if(f){
     S.sheet[f]=el.value;
