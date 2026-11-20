@@ -57,7 +57,7 @@ body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset
 img{max-width:100%}
 [hidden]{display:none!important}
 h1,h2,h3{font-family:var(--font-display);font-weight:600;text-wrap:balance;margin:0;letter-spacing:-.01em}
-button{font:inherit;color:inherit;cursor:pointer;border:0;background:none}
+button{font:inherit;color:inherit;cursor:pointer;border:0;background:none;margin:0;appearance:none;-webkit-appearance:none}
 /* 16px is the floor for anything you can focus: Safari on iOS zooms the page
    in when you tap a smaller control and never zooms back out, which leaves the
    layout wider than the screen for the rest of the visit. */
@@ -112,6 +112,13 @@ input,select,textarea{font:inherit;color:inherit;font-size:16px}
 .ghead h1{font-size:25px}
 .ghead .sub{font-size:13px;color:var(--muted);margin-top:3px}
 .ghead-actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+/* margin-left:auto parks the buttons at the right of the header while they
+   share a line with the name. Once they wrap to a line of their own it keeps
+   pushing, so the row ends up shoved against the right edge and starting
+   somewhere short of the name above it. On a phone they get their own row
+   and start where everything else on the card starts. */
+@media (max-width:760px){.ghead-top{flex-direction:column;gap:12px}
+  .ghead-actions{margin-left:0;width:100%}}
 .btn{padding:8px 14px;border-radius:9px;border:1px solid var(--line-strong);background:var(--surface);font-size:14px;font-weight:500;white-space:nowrap}
 .btn:hover{border-color:var(--accent-ink);color:var(--accent-ink)}
 /* Dark type on the Tiffany fill, the way the box itself is labelled -- white
