@@ -210,14 +210,22 @@ input,select,textarea{font:inherit;color:inherit}
 .seg{display:flex;gap:4px;background:var(--surface-2);padding:3px;border-radius:10px;flex-wrap:wrap}
 .seg button{flex:1 1 auto;padding:7px 9px;border-radius:7px;font-size:13px;font-weight:500;color:var(--muted);white-space:nowrap}
 .seg button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.1)}
+.seg.big button{padding:11px 10px;font-size:14px}
+button.splitrow{width:100%;text-align:left;padding:11px 0;-webkit-tap-highlight-color:transparent}
+button.splitrow:active{background:var(--surface-2)}
+button.splitrow[aria-pressed="true"] .cell{color:var(--ink)}
+.tick{width:21px;height:21px;flex:0 0 auto;border-radius:6px;border:1.5px solid var(--line-strong);display:grid;place-items:center}
+.tick::after{content:"";width:9px;height:5px;border-left:2px solid #fff;border-bottom:2px solid #fff;transform:rotate(-45deg) translateY(-1px);opacity:0}
+[aria-pressed="true"] .tick{background:var(--accent);border-color:var(--accent)}
+[aria-pressed="true"] .tick::after{opacity:1}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .chip{padding:6px 11px;border-radius:20px;border:1px solid var(--line-strong);font-size:13px}
 .chip[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
 .splitrow{display:grid;grid-template-columns:minmax(0,1fr) 94px;gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid var(--line)}
-.splitrow:last-of-type{border-bottom:0}
+.splitrow:nth-last-child(2),.splitrow:last-child{border-bottom:0}
 .splitrow .nm{display:flex;align-items:center;gap:8px;min-width:0}
 .splitrow .nm span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.splitrow input[type="checkbox"]{width:17px;height:17px;accent-color:var(--accent);flex:0 0 auto}
+.splitrow input[type="checkbox"]{width:21px;height:21px;accent-color:var(--accent);flex:0 0 auto}
 .splitrow .cell{text-align:right;font-size:13.5px;color:var(--muted)}
 .splitrow .inp{padding:6px 8px;text-align:right}
 .maprow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid var(--line)}
@@ -908,6 +916,19 @@ function catInfo(gid,id){
 function catSlug(label){
   var s=String(label).toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");
   return "c-"+(s||"cat")+"-"+Math.random().toString(36).slice(2,6);
+}
+/* A category's id is what expenses are filed under, so a rename touches the
+   label alone and nothing moves out from under the household. */
+function renameCat(gid,id,label){
+  label=String(label||"").trim();
+  var cur=S.rules[gid];
+  if(!cur||!label||!Array.isArray(cur.cats))return;
+  var body=JSON.parse(JSON.stringify(cur)),i,changed=false;
+  for(i=0;i<body.cats.length;i++)
+    if(body.cats[i].id===id&&body.cats[i].label!==label){body.cats[i].label=label;changed=true;}
+  if(!changed)return;
+  body.updatedAt=Date.now();
+  put("rules",gid,body);
 }
 function addCat(gid,label,bucket){
   label=String(label||"").trim();
@@ -1618,9 +1639,12 @@ function render(){
 /* ========================================================================
    Sheets
    ====================================================================== */
+/* Which sheet is on screen, so a repaint can tell a redraw of the same sheet
+   from a different one opening. */
+var sheetShown=null;
 function renderSheet(){
   var root=document.getElementById("sheetroot");
-  if(!S.sheet){root.innerHTML="";return;}
+  if(!S.sheet){root.innerHTML="";sheetShown=null;return;}
   var k=S.sheet.kind,h="";
   if(k==="expense")h=sheetExpense();
   else if(k==="group")h=sheetGroup();
@@ -1631,7 +1655,17 @@ function renderSheet(){
   else if(k==="whoami")h=sheetWhoAmI();
   else if(k==="classify")h=sheetClassify();
   else if(k==="share")h=sheetShare();
+  /* The sheet is rebuilt wholesale, which would otherwise throw the reader back
+     to the top every time they tap a row. Carry the scroll position across a
+     redraw of the same sheet; a different sheet still opens at the top. */
+  var was=root.querySelector(".sheet"),top=was?was.scrollTop:0;
+  var tag=k+"/"+(S.sheet.id||"");
   root.innerHTML='<div class="scrim" data-act="scrim"><div class="sheet" role="dialog" aria-modal="true">'+h+'</div></div>';
+  if(top&&tag===sheetShown){
+    var now=root.querySelector(".sheet");
+    if(now)now.scrollTop=top;
+  }
+  sheetShown=tag;
 }
 function shead(title){
   return '<div class="shead"><h2>'+esc(title)+'</h2>'
@@ -1678,11 +1712,11 @@ function sheetExpense(){
 
   h+='<div class="field"><span class="flabel">Paid by</span>';
   if(!F.multiPay){
-    h+='<select class="inp" data-f="payer">';
+    h+='<div class="seg big">';
     for(i=0;i<g.members.length;i++)
-      h+='<option value="'+esc(g.members[i].id)+'"'+(g.members[i].id===F.payer?" selected":"")+'>'
-        +esc(g.members[i].name)+'</option>';
-    h+='</select><div class="tally"><span></span>'
+      h+='<button data-act="fpayer" data-v="'+esc(g.members[i].id)+'" aria-pressed="'
+        +(g.members[i].id===F.payer)+'">'+esc(g.members[i].name)+'</button>';
+    h+='</div><div class="tally"><span></span>'
       +'<button class="btn ghost" data-act="multipay" data-v="1">Several people paid</button></div>';
   }else{
     for(i=0;i<F.payerOrder.length;i++){
@@ -1717,8 +1751,17 @@ function sheetExpense(){
         +(on?"":"disabled ")+'value="'+esc(F.raw[m.id]||"")+'" placeholder="'
         +(F.mode==="percent"?"%":F.mode==="shares"?"1":"0.00")+'">';
     }
-    h+='<div class="splitrow"><label class="nm"><input type="checkbox" data-sel="'+esc(m.id)+'"'
-      +(on?" checked":"")+'><span>'+esc(m.name)+'</span></label>'+right+'</div>';
+    /* In Evenly mode the row holds no input of its own, so the whole line is the
+       control -- name through to amount -- which is far easier to hit one-handed
+       than a checkbox. The other modes keep a real checkbox, because the right of
+       the row is a field that has to take a tap of its own. */
+    if(F.mode==="equal")
+      h+='<button class="splitrow" data-act="fsel" data-v="'+esc(m.id)+'" aria-pressed="'+on+'">'
+        +'<span class="nm"><span class="tick"></span><span>'+esc(m.name)+'</span></span> '
+        +right+'</button>';
+    else
+      h+='<div class="splitrow"><label class="nm"><input type="checkbox" data-sel="'+esc(m.id)+'"'
+        +(on?" checked":"")+'><span>'+esc(m.name)+'</span></label>'+right+'</div>';
   }
   h+='<div class="tally"><span class="'+(res.err?"warn":"")+'">'+esc(res.err||res.info)+'</span>'
     +'<span><b class="num">'+esc(fmt(total,cur))+'</b> total</span></div></div>';
@@ -1868,6 +1911,16 @@ function sheetClassify(){
     +'<option value="wants" selected>counts as Wants</option>'
     +'<option value="savings">counts as Savings</option></select></div>'
     +'<button class="btn block" data-act="addcat" style="margin-top:8px">Add category</button></div>';
+
+  var mine=customCats(g.id);
+  if(mine.length){
+    h+='<div class="field"><span class="flabel">Your own categories</span>';
+    for(i=0;i<mine.length;i++)
+      h+='<div class="memline"><input class="inp" data-catname="'+esc(mine[i].id)+'" value="'
+        +esc(mine[i].label)+'" autocomplete="off"></div>';
+    h+='<p class="note">A new name here shows everywhere at once. The expenses filed '
+      +'under it stay where they are.</p></div>';
+  }
 
   var shown=Math.min(list.length,S.showCats);
   for(i=0;i<shown;i++){
@@ -2254,6 +2307,12 @@ document.addEventListener("click",function(ev){
   }
   if(a==="fmode"){S.sheet.mode=t.getAttribute("data-v");render();return;}
   if(a==="fcat"){S.sheet.category=t.getAttribute("data-v");render();return;}
+  if(a==="fpayer"){S.sheet.payer=t.getAttribute("data-v");render();return;}
+  if(a==="fsel"){
+    var who2=t.getAttribute("data-v"),at2=S.sheet.sel.indexOf(who2);
+    if(at2<0)S.sheet.sel.push(who2);else S.sheet.sel.splice(at2,1);
+    render();return;
+  }
   if(a==="multipay"){
     var on=t.getAttribute("data-v")==="1";
     S.sheet.multiPay=on;
@@ -2343,6 +2402,8 @@ document.addEventListener("change",function(ev){
   if(el.id==="csvfile"){readImportFile(el);return;}
   var mp=el.getAttribute("data-map");
   if(mp!==null){S.sheet.map[parseInt(mp,10)]=el.value;return;}
+  var cn=el.getAttribute("data-catname");
+  if(cn!==null){renameCat(S.sheet.gid,cn,el.value);return;}
   var rl=el.getAttribute("data-rule");
   /* An empty choice clears the rule, so a category can be taken back off. */
   if(rl!==null){setRule(S.sheet.gid,rl,el.value);return;}
