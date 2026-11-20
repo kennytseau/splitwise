@@ -180,6 +180,7 @@ input,select,textarea{font:inherit;color:inherit}
 .track2{height:8px;min-width:0;background:var(--surface-2);border-radius:4px;overflow:hidden}
 .fill2{display:block;height:100%;background:var(--accent);border-radius:4px}
 .fill2.un{background:var(--line-strong)}
+.fill2.cr{background:var(--credit)}
 .camt{text-align:right;font-family:var(--font-display);font-size:14.5px}
 .cpct{text-align:right;font-size:12.5px;color:var(--faint)}
 @media (max-width:560px){.catrow{grid-template-columns:minmax(0,1fr) minmax(72px,auto) 38px}.track2{display:none}}
@@ -882,6 +883,12 @@ var SPEND=[
   {id:"subs",        label:"Subscriptions & digital",  bucket:"wants"},
   {id:"fees",        label:"Fees, tax & professional", bucket:"needs"},
   {id:"savings",     label:"Savings & investments",    bucket:"savings"},
+  /* A credit counts against spending rather than toward it. Rebates and
+     reimbursements recorded as ordinary expenses -- which is how they
+     arrive from Splitwise -- otherwise inflate every total they touch. It
+     sits outside needs/wants/savings so it cannot distort that split, and
+     it never touches balances: who owes whom is unchanged. */
+  {id:"refunds",     label:"Refunds & rebates",        bucket:"none", credit:true},
   {id:"unclassified",label:"Unclassified",             bucket:"none"}
 ];
 /* A household keeps buckets no standard chart of accounts has -- a retailer
@@ -985,12 +992,13 @@ function monthBreakdown(ex,rules,month,gid){
   for(i=0;i<ex.length;i++){
     var e=ex[i];
     if(String(e.date).slice(0,7)!==month)continue;
-    var id=catOf(e,rules);
-    cats[id]=(cats[id]||0)+e.cents;
-    var bk=catInfo(gid,id).bucket;
+    var id=catOf(e,rules),info=catInfo(gid,id);
+    var amt=info.credit?-e.cents:e.cents;
+    cats[id]=(cats[id]||0)+amt;
+    var bk=info.bucket;
     if(buckets[bk]===undefined)bk="none";
-    buckets[bk]+=e.cents;
-    total+=e.cents;count++;
+    buckets[bk]+=amt;
+    total+=amt;count++;
   }
   return {cats:cats,buckets:buckets,total:total,count:count};
 }
@@ -1016,7 +1024,8 @@ function unclassifiedMerchants(ex,rules){
 function computeShares(total,mode,sel,raw,cur){
   var i,res={shares:[],err:null,info:""};
   if(!sel.length){res.err="Pick at least one person to split between.";return res;}
-  if(!(total>0)){res.err="Enter an amount first.";return res;}
+  /* A negative amount is a refund coming back, and splits the same way. */
+  if(!total){res.err="Enter an amount first.";return res;}
 
   if(mode==="equal"){
     var v=allocate(total,sel.map(function(){return 1;}));
@@ -1029,7 +1038,7 @@ function computeShares(total,mode,sel,raw,cur){
     for(i=0;i<sel.length;i++){
       var c=parseMoney(raw[sel[i]],cur);
       if(isNaN(c))c=0;
-      if(c<0)bad=true;
+      if(total>0&&c<0)bad=true;
       res.shares.push({m:sel[i],cents:c});
       sum+=c;
     }
@@ -1352,6 +1361,21 @@ function renderPane(){
       if(win[i].shares[j].m===me)myShare+=win[i].shares[j].cents;
   }
   var mine=me?(n[me]||0):0;
+  /* The balance is cumulative, and the settlements here are part-payments
+     that never bring it to zero, so it does not equal the window above. Say
+     how much of it predates the window rather than leaving the two figures
+     looking like they should reconcile and failing to. */
+  var carried=0;
+  if(me&&since){
+    var inWindow=0;
+    for(i=0;i<win.length;i++)inWindow+=myDelta(win[i],me).delta;
+    for(i=0;i<st.length;i++){
+      if(st[i].date<since)continue;
+      if(st[i].from===me)inWindow+=st[i].cents;
+      else if(st[i].to===me)inWindow-=st[i].cents;
+    }
+    carried=mine-inWindow;
+  }
 
   var h='<div class="ghead"><div class="ghead-top"><div style="min-width:0">'
     +'<h1>'+esc(g.name)+'</h1><div class="sub">'+g.members.length+(g.members.length===1?" person":" people")
@@ -1372,7 +1396,9 @@ function renderPane(){
     +'<div class="stat"><div class="k">'+(mine>0?"You are owed":mine<0?"You owe":"Your balance")+'</div>'
     +'<div class="v num '+(mine>0?"pos":mine<0?"neg":"zero")+'">'
     +esc(mine===0?"settled":fmt(Math.abs(mine),g.currency))+'</div>'
-    +'<div class="s">running total, all time</div></div>'
+    +'<div class="s">'+(since&&carried
+      ? "includes "+esc(fmt(Math.abs(carried),g.currency))+" owing before "+esc(shortDate(since))
+      : "every expense and payment so far")+'</div></div>'
     +'</div>'
     +'<div class="whoami"><label for="mesel">You are</label><select id="mesel">';
   for(i=0;i<g.members.length;i++)
@@ -1484,10 +1510,11 @@ function renderSpending(g,ex){
   var max=rows.length?rows[0].v:1;
   for(i=0;i<rows.length;i++){
     var r=rows[i];
+    var cls=r.v<0?" cr":(r.c.id==="unclassified"?" un":"");
     h+='<div class="catrow"><span class="cname">'+esc(r.c.label)+'</span>'
-      +'<span class="track2"><span class="fill2'+(r.c.id==="unclassified"?" un":"")
-      +'" style="width:'+Math.max(2,Math.round(r.v/max*100))+'%"></span></span>'
-      +'<span class="camt num">'+esc(fmt(r.v,g.currency))+'</span>'
+      +'<span class="track2"><span class="fill2'+cls+'" style="width:'
+      +Math.max(2,Math.round(Math.abs(r.v)/(max||1)*100))+'%"></span></span>'
+      +'<span class="camt num'+(r.v<0?" pos":"")+'">'+esc(fmt(r.v,g.currency))+'</span>'
       +'<span class="cpct num">'+(b.total?Math.round(r.v/b.total*100):0)+'%</span></div>';
   }
 
@@ -1624,7 +1651,9 @@ function sheetExpense(){
   h+='<div class="two"><div class="field"><label for="f-amt">Amount ('+esc(cur)+')</label>'
     +'<input class="inp num" id="f-amt" data-f="amount" inputmode="decimal" value="'+esc(F.amount)+'" placeholder="0.00"></div>'
     +'<div class="field"><label for="f-date">Date</label>'
-    +'<input class="inp" id="f-date" type="date" data-f="date" value="'+esc(F.date)+'"></div></div>';
+    +'<input class="inp" id="f-date" type="date" data-f="date" value="'+esc(F.date)+'"></div></div>'
+    +'<p class="note" style="margin-top:-8px">A negative amount records money coming back — '
+    +'a refund or a rebate — and splits the same way.</p>';
 
   h+='<div class="field"><span class="flabel">Category</span><div class="chips">';
   for(i=0;i<CATS.length;i++)
