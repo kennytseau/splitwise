@@ -58,7 +58,6 @@ input,select,textarea{font:inherit;color:inherit}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
 .num{font-variant-numeric:tabular-nums}
 .wrap{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));max-width:1140px;margin:0 auto}
-.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 
 /* top bar */
 .topbar{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:var(--surface);border-bottom:1px solid var(--line)}
@@ -621,7 +620,7 @@ async function sealRecords(keys){
   return out;
 }
 async function applyRemote(records){
-  var changed=false,unreadable=0,i;
+  var changed=false,i;
   for(i=0;i<records.length;i++){
     var r=records[i];
     if(KINDS.indexOf(r.kind)<0)continue;
@@ -631,13 +630,12 @@ async function applyRemote(records){
     if(!take)continue;
     var body=null;
     try{body=await unseal(r.body);}catch(e){body=null;}
-    if(body===null){unreadable++;continue;}
+    /* A record this key cannot open is left as it is rather than dropped:
+       the right link would still read it. */
+    if(body===null)continue;
     S.rec[r.kind][r.id]={body:body,u:r.updated,d:r.deleted?1:0};
     changed=true;
   }
-  /* Records this key cannot open are left alone rather than dropped: the
-     right link would still read them. */
-  if(unreadable)S.unreadable=unreadable;
   if(changed)rebuildViews();
   return changed;
 }
@@ -1022,21 +1020,6 @@ function allMerchants(ex,rules){
   });
   return out;
 }
-/* Unclassified merchants for a group, biggest spend first. */
-function unclassifiedMerchants(ex,rules){
-  var byName={},i;
-  for(i=0;i<ex.length;i++){
-    var e=ex[i];
-    if(catOf(e,rules)!=="unclassified")continue;
-    var key=normDesc(e.desc)||"(no description)";
-    if(!byName[key])byName[key]={key:key,label:e.desc||"(no description)",cents:0,n:0};
-    byName[key].cents+=e.cents;byName[key].n++;
-  }
-  var out=[];
-  for(var k in byName)out.push(byName[k]);
-  out.sort(function(a,b){return b.cents-a.cents;});
-  return out;
-}
 
 /* ========================================================================
    Split maths
@@ -1125,6 +1108,11 @@ var SW_CATEGORIES={
 };
 function swCategory(name){
   return SW_CATEGORIES[String(name||"").trim().toLowerCase()]||"other";
+}
+/* One CSV cell, quoted only where it has to be. */
+function csvCell(v){
+  v=String(v==null?"":v);
+  return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;
 }
 function splitCsvLine(line){
   var out=[],cur="",q=false,i,c;
@@ -1919,11 +1907,10 @@ function exportUnclassified(){
   /* Everything, with whatever category it already has, so the file is a
      round trip: export, edit anywhere, paste back. */
   var list=allMerchants(expensesOf(g.id),rulesOf(g.id)),d=cinfo(g.currency).d,i;
-  function q(v){v=String(v==null?"":v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;}
   var lines=["Name,Expenses,Total,Category"];
   for(i=0;i<list.length;i++)
     lines.push([list[i].label,list[i].n,(list[i].cents/100).toFixed(d),
-      list[i].cat==="unclassified"?"":catInfo(g.id,list[i].cat).label].map(q).join(","));
+      list[i].cat==="unclassified"?"":catInfo(g.id,list[i].cat).label].map(csvCell).join(","));
   var blob=new Blob(["﻿"+lines.join("\r\n")],{type:"text/csv;charset=utf-8"});
   var url=URL.createObjectURL(blob),a=document.createElement("a");
   a.href=url;a.download=(g.name.replace(/[^A-Za-z0-9 _-]/g,"").trim().replace(/\s+/g,"-").toLowerCase()||"group")+"-unclassified.csv";
@@ -2154,10 +2141,9 @@ function exportCSV(){
   var g=S.groups[S.sheet?S.sheet.gid:S.gid];
   if(!g)return;
   var ex=expensesOf(g.id),st=settlementsOf(g.id),d=cinfo(g.currency).d,i,j,k;
-  function q(v){v=String(v==null?"":v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;}
   var head=["Date","Description","Category","Currency","Amount","Paid by","Note"];
   for(i=0;i<g.members.length;i++)head.push("Share: "+g.members[i].name);
-  var lines=[head.map(q).join(",")];
+  var lines=[head.map(csvCell).join(",")];
   for(i=0;i<ex.length;i++){
     var e=ex[i];
     var paid=e.payers.map(function(p){return memName(g,p.m)+" "+(p.cents/100).toFixed(d);}).join(" + ");
@@ -2167,12 +2153,12 @@ function exportCSV(){
       for(k=0;k<e.shares.length;k++)if(e.shares[k].m===g.members[j].id)sh=e.shares[k].cents;
       row.push(sh?(sh/100).toFixed(d):"");
     }
-    lines.push(row.map(q).join(","));
+    lines.push(row.map(csvCell).join(","));
   }
   for(i=0;i<st.length;i++){
     var s=st[i];
     lines.push([s.date,"Payment: "+memName(g,s.from)+" to "+memName(g,s.to),"Settlement",
-      g.currency,(s.cents/100).toFixed(d),memName(g,s.from),""].map(q).join(","));
+      g.currency,(s.cents/100).toFixed(d),memName(g,s.from),""].map(csvCell).join(","));
   }
   var name=(g.name.replace(/[^A-Za-z0-9 _-]/g,"").trim().replace(/\s+/g,"-").toLowerCase()||"group")+"-expenses.csv";
   var blob=new Blob(["﻿"+lines.join("\r\n")],{type:"text/csv;charset=utf-8"});
