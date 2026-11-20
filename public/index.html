@@ -883,9 +883,39 @@ var SPEND=[
   {id:"savings",     label:"Savings & investments",    bucket:"savings"},
   {id:"unclassified",label:"Unclassified",             bucket:"none"}
 ];
-function spendCat(id){
-  for(var i=0;i<SPEND.length;i++)if(SPEND[i].id===id)return SPEND[i];
+/* A household keeps buckets no standard chart of accounts has -- a retailer
+   it wants watched on its own, a bill paid for someone else. Custom
+   categories live beside the built-in ones and sync with the rules. */
+function customCats(gid){
+  var r=S.rules[gid];
+  return (r&&Array.isArray(r.cats))?r.cats:[];
+}
+function catsFor(gid){
+  var base=SPEND.slice(0,SPEND.length-1);
+  return base.concat(customCats(gid),[SPEND[SPEND.length-1]]);  /* Unclassified last */
+}
+function catInfo(gid,id){
+  var all=catsFor(gid),i;
+  for(i=0;i<all.length;i++)if(all[i].id===id)return all[i];
   return SPEND[SPEND.length-1];
+}
+function catSlug(label){
+  var s=String(label).toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");
+  return "c-"+(s||"cat")+"-"+Math.random().toString(36).slice(2,6);
+}
+function addCat(gid,label,bucket){
+  label=String(label||"").trim();
+  if(!label)return null;
+  var cur=S.rules[gid],body=cur?JSON.parse(JSON.stringify(cur)):{id:gid,gid:gid,map:{}};
+  if(!Array.isArray(body.cats))body.cats=[];
+  var i;
+  for(i=0;i<body.cats.length;i++)
+    if(body.cats[i].label.toLowerCase()===label.toLowerCase())return body.cats[i].id;
+  var id=catSlug(label);
+  body.cats.push({id:id,label:label,bucket:bucket||"wants",custom:true});
+  body.updatedAt=Date.now();
+  put("rules",gid,body);
+  return id;
 }
 /* A Splitwise category states a category outright, so it is evidence, not a
    guess. The three it omits -- General, Services, Life - Other -- name
@@ -943,14 +973,16 @@ function monthLabel(m){
   return MONL[(+p[1])-1]+" "+p[0];
 }
 /* Totals for one month: per category, per 50/30/20 bucket, and the whole. */
-function monthBreakdown(ex,rules,month){
+function monthBreakdown(ex,rules,month,gid){
   var cats={},buckets={needs:0,wants:0,savings:0,none:0},total=0,count=0,i;
   for(i=0;i<ex.length;i++){
     var e=ex[i];
     if(String(e.date).slice(0,7)!==month)continue;
     var id=catOf(e,rules);
     cats[id]=(cats[id]||0)+e.cents;
-    buckets[spendCat(id).bucket]+=e.cents;
+    var bk=catInfo(gid,id).bucket;
+    if(buckets[bk]===undefined)bk="none";
+    buckets[bk]+=e.cents;
     total+=e.cents;count++;
   }
   return {cats:cats,buckets:buckets,total:total,count:count};
@@ -1405,12 +1437,12 @@ function renderSpending(g,ex){
     return '<div class="card"><div class="empty"><h3>Nothing to break down yet</h3>'
       +'<p>Once there are expenses, this shows where the money went, month by month.</p></div></div>';
   var month=(S.month&&months.indexOf(S.month)>=0)?S.month:months[0];
-  var b=monthBreakdown(ex,rules,month);
+  var b=monthBreakdown(ex,rules,month,g.id);
 
   /* twelve-month strip, oldest on the left */
   var strip=months.slice(0,12).reverse(),tot=[],peak=1;
   for(i=0;i<strip.length;i++){
-    tot.push(monthBreakdown(ex,rules,strip[i]).total);
+    tot.push(monthBreakdown(ex,rules,strip[i],g.id).total);
     if(tot[i]>peak)peak=tot[i];
   }
   var h='<div class="card" style="margin-bottom:14px"><div class="mhead"><span>Spending by month</span>'
@@ -1439,8 +1471,8 @@ function renderSpending(g,ex){
   }
   h+='</div>';
 
-  var rows=[];
-  for(i=0;i<SPEND.length;i++)if(b.cats[SPEND[i].id])rows.push({c:SPEND[i],v:b.cats[SPEND[i].id]});
+  var rows=[],all=catsFor(g.id);
+  for(i=0;i<all.length;i++)if(b.cats[all[i].id])rows.push({c:all[i],v:b.cats[all[i].id]});
   rows.sort(function(a,z){return z.v-a.v;});
   var max=rows.length?rows[0].v:1;
   for(i=0;i<rows.length;i++){
@@ -1763,16 +1795,25 @@ function sheetClassify(){
     +esc(fmt(totalUn,g.currency))+'</b> with no category. Choosing one applies it to every '
     +'expense with that name, past and future. They are listed biggest first, so the '
     +'early ones do most of the work.</p>';
+  var opts=catsFor(g.id),optHtml="";
+  for(j=0;j<opts.length-1;j++)
+    optHtml+='<option value="'+esc(opts[j].id)+'">'+esc(opts[j].label)+'</option>';
+
+  h+='<div class="field"><span class="flabel">Add a category of your own</span>'
+    +'<div class="two"><input class="inp" id="newcat" placeholder="Luxury items" autocomplete="off">'
+    +'<select class="inp" id="newcatbucket"><option value="needs">counts as Needs</option>'
+    +'<option value="wants" selected>counts as Wants</option>'
+    +'<option value="savings">counts as Savings</option></select></div>'
+    +'<button class="btn block" data-act="addcat" style="margin-top:8px">Add category</button></div>';
+
   var shown=Math.min(list.length,S.showCats);
   for(i=0;i<shown;i++){
     var m=list[i];
     h+='<div class="maprow"><span>'+esc(m.label)
       +'<br><span class="note" style="margin:0">'+esc(fmt(m.cents,g.currency))+' · '+m.n
       +(m.n===1?" expense":" expenses")+'</span></span>'
-      +'<select class="inp" data-rule="'+esc(m.key)+'"><option value="">Choose a category…</option>';
-    for(j=0;j<SPEND.length-1;j++)
-      h+='<option value="'+SPEND[j].id+'">'+esc(SPEND[j].label)+'</option>';
-    h+='</select></div>';
+      +'<select class="inp" data-rule="'+esc(m.key)+'"><option value="">Choose a category…</option>'
+      +optHtml+'</select></div>';
   }
   if(list.length>shown)
     h+='<button class="btn block" data-act="morecats" style="margin-top:10px">Show more — '
@@ -2045,6 +2086,14 @@ document.addEventListener("click",function(ev){
   if(a==="pickmonth"){S.month=t.getAttribute("data-m");render();return;}
   if(a==="classify"){S.showCats=12;S.sheet={kind:"classify",gid:S.gid};render();return;}
   if(a==="morecats"){S.showCats+=12;render();return;}
+  if(a==="addcat"){
+    var nmEl=document.getElementById("newcat"),bkEl=document.getElementById("newcatbucket");
+    if(!nmEl||!nmEl.value.trim()){toast("Give the category a name first.");return;}
+    var nmVal=nmEl.value.trim();
+    addCat(S.sheet.gid,nmVal,bkEl?bkEl.value:"wants");
+    toast("Added “"+nmVal+"”. It is now one of the choices below.");
+    return;
+  }
   if(a==="import"){S.sheet={kind:"import",gid:S.gid,parsed:null,map:[],error:null,busy:false};render();return;}
   if(a==="runimport"){applyImport();return;}
   if(a==="newgroup"){openGroup(null);return;}
