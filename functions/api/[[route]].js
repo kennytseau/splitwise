@@ -181,13 +181,19 @@ async function sync(request, env, ledger) {
       return json({ error: "ledger_full" }, 507);
     }
 
-    // One sequence number per push: the cursor every client pages against.
+    // Every record gets its OWN sequence number, and this push reserves a
+    // contiguous block of them. Sharing one number across a push silently
+    // breaks paging: a page that ends inside such a group advances the
+    // cursor past the whole group, and everything after the page boundary
+    // is never delivered. A client then reports itself fully synced while
+    // missing records.
     const bumped = await env.DB.prepare(
-      "UPDATE ledgers SET seq = seq + 1 WHERE id = ?1 RETURNING seq"
+      "UPDATE ledgers SET seq = seq + ?2 WHERE id = ?1 RETURNING seq"
     )
-      .bind(ledger)
+      .bind(ledger, clean.length)
       .first();
-    const seq = bumped ? bumped.seq : 0;
+    const top = bumped ? bumped.seq : clean.length;
+    const base = top - clean.length; // this push owns base+1 .. top
 
     const upsert = env.DB.prepare(
       `INSERT INTO records (ledger, kind, id, body, updated, deleted, seq)
@@ -200,8 +206,8 @@ async function sync(request, env, ledger) {
        WHERE excluded.updated >= records.updated`
     );
     await env.DB.batch(
-      clean.map((r) =>
-        upsert.bind(ledger, r.kind, r.id, r.body, r.updated, r.deleted, seq)
+      clean.map((r, i) =>
+        upsert.bind(ledger, r.kind, r.id, r.body, r.updated, r.deleted, base + i + 1)
       )
     );
 

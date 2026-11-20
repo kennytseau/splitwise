@@ -4,7 +4,7 @@
 CREATE TABLE IF NOT EXISTS ledgers (
   id       TEXT PRIMARY KEY,
   key_hash TEXT    NOT NULL,          -- SHA-256 of the share key; the key itself is never stored
-  seq      INTEGER NOT NULL DEFAULT 0,-- bumped once per push; clients page against it
+  seq      INTEGER NOT NULL DEFAULT 0,-- high-water mark; each record takes the next value
   created  INTEGER NOT NULL
 );
 
@@ -15,7 +15,9 @@ CREATE TABLE IF NOT EXISTS records (
   body    TEXT    NOT NULL,           -- the record as JSON
   updated INTEGER NOT NULL,           -- client clock, used for last-writer-wins
   deleted INTEGER NOT NULL DEFAULT 0, -- tombstone, so deletions propagate
-  seq     INTEGER NOT NULL,
+  seq     INTEGER NOT NULL,           -- UNIQUE per record: the paging cursor. Two
+                                      -- records sharing one value make a page
+                                      -- boundary skip the rest of the group.
   PRIMARY KEY (ledger, kind, id)
 );
 
