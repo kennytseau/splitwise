@@ -241,6 +241,17 @@ button.splitrow[aria-pressed="true"] .cell{color:var(--ink)}
 .serow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)}
 .serow:last-of-type{border-bottom:0}
 .serow .sub{display:block;font-size:12.5px;color:var(--muted);margin-top:3px}
+.pickrow{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;width:100%;padding:13px 12px;border:1px solid var(--line-strong);border-radius:10px;background:var(--bg);text-align:left}
+.pickrow .pk{font-size:15px}
+.pickrow .pv{color:var(--muted);text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pc{color:var(--faint);font-size:19px;line-height:1}
+.opts{border-top:1px solid var(--line)}
+.opts.flat{border-top:0;border:1px solid var(--line-strong);border-radius:10px;overflow:hidden}
+.opt{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;width:100%;padding:15px 18px;border-bottom:1px solid var(--line);text-align:left;font-size:15px;-webkit-tap-highlight-color:transparent}
+.opts.flat .opt{padding:12px 14px}
+.opt:last-child{border-bottom:0}
+.opt:active{background:var(--surface-2)}
+.opt .ok{color:var(--accent-ink);font-weight:700}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .chip{padding:6px 11px;border-radius:20px;border:1px solid var(--line-strong);font-size:13px}
 .chip[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent-ink);color:var(--accent-ink)}
@@ -582,20 +593,104 @@ function drop(kind,id){
    leaves every occurrence it has already made alone -- those were real
    expenses that were really owed.
    ====================================================================== */
-var EVERY=[{id:"none",label:"Doesn’t repeat"},{id:"week",label:"Weekly"},
-  {id:"fortnight",label:"Fortnightly"},{id:"month",label:"Monthly"},
-  {id:"quarter",label:"Quarterly"},{id:"year",label:"Yearly"}];
-var EVERYNOTE={week:"every week",fortnight:"every fortnight",month:"every month",
-  quarter:"every three months",year:"every year"};
 var MAX_CATCHUP=400;             /* a weekly repeat left alone for seven years */
+var DOW=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+var NTH=["","first","second","third","fourth"];
 
-function stepFrom(anchor,every,k){
-  if(every==="week")return addDays(anchor,7*k);
-  if(every==="fortnight")return addDays(anchor,14*k);
-  if(every==="month")return addMonths(anchor,k);
-  if(every==="quarter")return addMonths(anchor,3*k);
-  if(every==="year")return addMonths(anchor,12*k);
+/* How often a series comes round:
+     {unit:"day"|"week"|"month"|"year", n:1, by:null|{nth,dow}}
+   `by` only applies to months, and picks a weekday -- the third Friday, the
+   last Friday -- rather than a day of the month. With `by` null a month-long
+   rule falls on the anchor's own day, clamped to the month's length.
+
+   Deliberately not a full calendar recurrence grammar: this covers what a
+   household bill does and stays small enough to render back into a sentence
+   that can be trusted. */
+var OLD_EVERY={week:{unit:"week",n:1},fortnight:{unit:"week",n:2},
+  month:{unit:"month",n:1},quarter:{unit:"month",n:3},year:{unit:"year",n:1}};
+/* Series written before rules existed hold a single word. They are read as a
+   rule rather than rewritten, so nothing in the ledger has to be touched. */
+function ruleOf(s){
+  if(s&&s.rule&&s.rule.unit)return s.rule;
+  return (s&&OLD_EVERY[s.every])||null;
+}
+function ruleKey(r,anchor){
+  if(!r||!r.unit)return "none";
+  return r.unit+"/"+(r.n>0?r.n:1)+"/"+(r.by?r.by.nth+","+r.by.dow:"");
+}
+function ordinal(d){
+  var s=["th","st","nd","rd"],v=d%100;
+  return d+(s[(v-20)%10]||s[v]||s[0]);
+}
+function dowOf(iso){
+  var p=dparts(iso);
+  return new Date(Date.UTC(p.y,p.m,p.d)).getUTCDay();
+}
+function lastDayOf(y,m){return new Date(Date.UTC(y,m+1,0)).getUTCDate();}
+/* The nth given weekday of a month; nth -1 means the last one. */
+function nthWeekday(y,m,nth,dow){
+  var last=lastDayOf(y,m),d;
+  if(nth<0){
+    d=last-((new Date(Date.UTC(y,m,last)).getUTCDay()-dow+7)%7);
+  }else{
+    d=1+((dow-new Date(Date.UTC(y,m,1)).getUTCDay()+7)%7)+(nth-1)*7;
+    if(d>last)return null;
+  }
+  return isoOf({y:y,m:m,d:d});
+}
+function stepFrom(anchor,rule,k){
+  if(!rule||!rule.unit||!isDate(anchor))return null;
+  var n=rule.n>0?rule.n:1;
+  if(rule.unit==="day")return addDays(anchor,n*k);
+  if(rule.unit==="week")return addDays(anchor,7*n*k);
+  if(rule.unit==="year")return addMonths(anchor,12*n*k);
+  if(rule.unit==="month"){
+    var base=addMonths(anchor,n*k);
+    if(rule.by){var p=dparts(base);return nthWeekday(p.y,p.m,rule.by.nth,rule.by.dow);}
+    return base;
+  }
   return null;
+}
+/* One sentence for a rule, used by the form row, the picker and the list, so
+   the three can never tell you different things. */
+function ruleText(rule,anchor){
+  if(!rule||!rule.unit||!isDate(anchor))return "Just this once";
+  var n=rule.n>0?rule.n:1,p=dparts(anchor);
+  if(rule.unit==="day")return n===1?"Every day":"Every "+n+" days";
+  if(rule.unit==="week"){
+    var d=DOW[dowOf(anchor)];
+    return (n===1?"Weekly on ":n===2?"Fortnightly on ":"Every "+n+" weeks on ")+d;
+  }
+  if(rule.unit==="month"){
+    var when=rule.by
+      ? "the "+(rule.by.nth<0?"last":NTH[rule.by.nth])+" "+DOW[rule.by.dow]
+      : "the "+ordinal(p.d);
+    return (n===1?"Monthly on ":n===3?"Quarterly on ":"Every "+n+" months on ")+when;
+  }
+  if(rule.unit==="year")
+    return (n===1?"Yearly on ":"Every "+n+" years on ")+p.d+" "+MONL[p.m];
+  return "Just this once";
+}
+/* The weekday rule the anchor itself suggests -- the third Friday, or the last
+   Friday when there is no fifth one to be had. */
+function weekdayRule(anchor){
+  var p=dparts(anchor),dow=dowOf(anchor);
+  if(p.d+7>lastDayOf(p.y,p.m))return {nth:-1,dow:dow};
+  return {nth:Math.floor((p.d-1)/7)+1,dow:dow};
+}
+/* The choices offered for a given date. Reading them off the date is what
+   keeps "every third Friday" out of a custom rule builder. */
+function repeatChoices(anchor){
+  if(!isDate(anchor))return [{id:"none",rule:null}];
+  return [
+    {id:"none",rule:null},
+    {id:"w1",rule:{unit:"week",n:1}},
+    {id:"w2",rule:{unit:"week",n:2}},
+    {id:"m1",rule:{unit:"month",n:1}},
+    {id:"mw",rule:{unit:"month",n:1,by:weekdayRule(anchor)}},
+    {id:"m3",rule:{unit:"month",n:3}},
+    {id:"y1",rule:{unit:"year",n:1}}
+  ];
 }
 function occId(sid,when){return "r-"+sid+"-"+when;}
 function seriesOf(gid){
@@ -610,10 +705,11 @@ function seriesOf(gid){
 /* The first date still to come, or null once a series has run out or been
    stopped. */
 function nextDue(s){
-  var now=today(),k,when;
+  var now=today(),rule=ruleOf(s),k,when;
+  if(!rule)return null;
   for(k=1;k<=MAX_CATCHUP;k++){
-    when=stepFrom(s.anchor,s.every,k);
-    if(!when)return null;
+    when=stepFrom(s.anchor,rule,k);
+    if(!when)continue;                 /* a month with no such weekday is skipped */
     if(s.stopped&&when>=s.stopped)return null;
     if(when>now)return when;
   }
@@ -624,15 +720,17 @@ function nextDue(s){
    half-pulled ledger could rebuild an occurrence whose deletion has not
    arrived yet. */
 function runSeries(){
-  var now=today(),made=0,sid,k,when,eid,s,t;
+  var now=today(),made=0,sid,k,when,eid,s,t,rule;
   for(sid in S.series){
     s=S.series[sid];
+    rule=ruleOf(s);
     /* A bad anchor would be read as 1970 and owe four hundred months at once,
        so a series without a real date is left alone. */
-    if(!s||!s.every||!isDate(s.anchor)||!s.tmpl||!S.groups[s.gid])continue;
+    if(!s||!rule||!isDate(s.anchor)||!s.tmpl||!S.groups[s.gid])continue;
     for(k=1;k<=MAX_CATCHUP;k++){
-      when=stepFrom(s.anchor,s.every,k);
-      if(!when||when>now)break;
+      when=stepFrom(s.anchor,rule,k);
+      if(!when)continue;               /* a month with no such weekday is skipped */
+      if(when>now)break;
       if(s.stopped&&when>=s.stopped)break;
       eid=occId(sid,when);
       /* An occurrence that was deleted stays deleted: its tombstone is still
@@ -1797,7 +1895,7 @@ function renderSheet(){
      to the top every time they tap a row. Carry the scroll position across a
      redraw of the same sheet; a different sheet still opens at the top. */
   var was=root.querySelector(".sheet"),top=was?was.scrollTop:0;
-  var tag=k+"/"+(S.sheet.id||"");
+  var tag=k+"/"+(S.sheet.id||"")+"/"+(S.sheet.step||"");
   root.innerHTML='<div class="scrim" data-act="scrim"><div class="sheet" role="dialog" aria-modal="true">'+h+'</div></div>';
   if(top&&tag===sheetShown){
     var now=root.querySelector(".sheet");
@@ -1820,9 +1918,66 @@ function currencyOptions(selected){
   return h;
 }
 
+/* The repeat picker pushes over the form rather than replacing the sheet, so
+   a half-written expense is still there when you come back. */
+function sheetRepeat(){
+  var F=S.sheet,list=repeatChoices(F.date),cur=ruleKey(F.rule),i,seen=false;
+  var h='<div class="shead"><button class="btn ghost" data-act="repeatback" aria-label="Back">‹</button>'
+    +'<h2>Repeat</h2></div><div class="opts">';
+  for(i=0;i<list.length;i++){
+    var k=ruleKey(list[i].rule);
+    if(k===cur)seen=true;
+    h+=optRow(ruleText(list[i].rule,F.date),k===cur,'data-act="repeatpick" data-v="'+list[i].id+'"');
+  }
+  /* A rule built by hand still needs somewhere to show as the current one. */
+  if(!seen)h+=optRow(ruleText(F.rule,F.date),true,'data-act="repeatback"');
+  h+='<button class="opt" data-act="repeatcustom"><span>Custom…</span>'
+    +'<span class="pc">›</span></button></div>';
+  return h;
+}
+function optRow(label,on,attrs){
+  return '<button class="opt" '+attrs+' aria-pressed="'+!!on+'"><span>'+esc(label)+'</span>'
+    +(on?'<span class="ok" aria-hidden="true">✓</span>':"")+'</button>';
+}
+function sheetRepeatCustom(){
+  var F=S.sheet,c=F.cust,i;
+  var units=[{id:"day",label:"days"},{id:"week",label:"weeks"},
+    {id:"month",label:"months"},{id:"year",label:"years"}];
+  var h='<div class="shead"><button class="btn ghost" data-act="repeatback" aria-label="Back">‹</button>'
+    +'<h2>Custom</h2></div><div class="sbody">';
+  h+='<div class="field"><span class="flabel">Repeat every</span>'
+    +'<div class="two"><input class="inp num" data-rn="1" inputmode="numeric" value="'
+    +esc(String(c.n))+'"><div class="seg">';
+  for(i=0;i<units.length;i++)
+    h+='<button data-act="runit" data-v="'+units[i].id+'" aria-pressed="'
+      +(c.unit===units[i].id)+'">'+esc(units[i].label)+'</button>';
+  h+='</div></div></div>';
+  if(c.unit==="month"&&isDate(F.date)){
+    var wd=weekdayRule(F.date);
+    h+='<div class="field"><span class="flabel">Which day</span><div class="opts flat">'
+      +optRow("On the "+ordinal(dparts(F.date).d),!c.by,'data-act="rby" data-v="dom"')
+      +optRow("On the "+(wd.nth<0?"last":NTH[wd.nth])+" "+DOW[wd.dow],!!c.by,
+        'data-act="rby" data-v="dow"')
+      +'</div></div>';
+  }
+  h+='<p class="note">'+esc(ruleText(custRule(c,F.date),F.date))+'. Counting from '
+    +esc(shortDate(F.date))+'.</p></div>';
+  h+='<div class="sfoot stack"><button class="btn primary" data-act="repeatsave">Done</button></div>';
+  return h;
+}
+/* The editor keeps a loose draft; this is the rule it means. */
+function custRule(c,anchor){
+  var n=parseInt(c.n,10);
+  if(!(n>0))n=1;
+  if(c.unit==="month"&&c.by&&isDate(anchor))
+    return {unit:"month",n:n,by:weekdayRule(anchor)};
+  return {unit:c.unit,n:n};
+}
 function sheetExpense(){
   var F=S.sheet,g=S.groups[F.gid];
   if(!g)return "";
+  if(F.step==="repeat")return sheetRepeat();
+  if(F.step==="custom")return sheetRepeatCustom();
   var cur=g.currency,total=parseMoney(F.amount,cur),i;
   if(isNaN(total))total=0;
   var payTotal=0;
@@ -1847,24 +2002,27 @@ function sheetExpense(){
   h+='<div class="field"><label for="f-date">Date</label>'
     +'<input class="inp" id="f-date" type="date" data-f="date" value="'+esc(F.date)+'"></div>';
 
-  /* A new expense can start a repeat. One that came out of a repeat is managed
-     from the repeat itself, so it is not offered a second one. */
+  /* Repeating is the exception, not the rule, so it gets one line that states
+     where it stands rather than a row of choices standing permanently open.
+     An expense that came out of a repeat is managed from the repeat itself,
+     so it is not offered a second one. */
   var fromS=F.id&&S.expenses[F.id]?S.expenses[F.id].series:null;
   if(fromS&&S.series[fromS]){
-    h+='<div class="field"><span class="flabel">Repeats</span>'
-      +'<p class="note" style="margin-top:0">This came from a repeating expense — '
-      +esc(EVERYNOTE[S.series[fromS].every]||"")+'. Editing it here changes this one only.</p>'
-      +'<button class="btn block" data-act="series" style="margin-top:6px">Manage repeating expenses</button></div>';
+    var ser=S.series[fromS];
+    h+='<div class="field"><button class="pickrow" data-act="series">'
+      +'<span class="pk">Repeat</span><span class="pv">'
+      +esc(ruleText(ruleOf(ser),ser.anchor))+'</span><span class="pc">›</span></button>'
+      +'<p class="note" style="margin-top:6px">This one came out of that repeat. '
+      +'Changing it here changes this one only.</p></div>';
   }else{
-    h+='<div class="field"><span class="flabel">Repeats</span><div class="chips">';
-    for(i=0;i<EVERY.length;i++)
-      h+='<button class="chip" data-act="frepeat" data-v="'+EVERY[i].id+'" aria-pressed="'
-        +((F.every||"none")===EVERY[i].id)+'">'+esc(EVERY[i].label)+'</button>';
-    h+='</div>';
-    if(F.every&&F.every!=="none"&&isDate(F.date))
-      h+='<p class="note" style="margin-top:6px">Evenly puts this in again '
-        +esc(EVERYNOTE[F.every])+' — the next one on '
-        +esc(shortDate(stepFrom(F.date,F.every,1)))+' — until you stop it.</p>';
+    h+='<div class="field"><button class="pickrow" data-act="repeatopen">'
+      +'<span class="pk">Repeat</span><span class="pv">'+esc(ruleText(F.rule,F.date))
+      +'</span><span class="pc">›</span></button>';
+    if(F.rule&&isDate(F.date)){
+      var due1=stepFrom(F.date,F.rule,1);
+      h+='<p class="note" style="margin-top:6px">Goes in again on its own'
+        +(due1?' — the next one on '+esc(shortDate(due1)):"")+', until you stop it.</p>';
+    }
     h+='</div>';
   }
 
@@ -2038,7 +2196,7 @@ function sheetSeries(){
     var s=list[i],due=nextDue(s),t=s.tmpl;
     var who=t.payers.length===1?memName(g,t.payers[0].m)+" pays":"several people pay";
     h+='<div class="serow"><span><b>'+esc(t.desc)+'</b> · '+esc(fmt(t.cents,g.currency))
-      +'<span class="sub">'+esc(EVERYNOTE[s.every]||s.every)+', '+esc(who)+'<br>'
+      +'<span class="sub">'+esc(ruleText(ruleOf(s),s.anchor))+', '+esc(who)+'<br>'
       +(s.stopped?'Stopped '+esc(shortDate(s.stopped))
         :due?'Next on '+esc(shortDate(due)):'Nothing further due')
       +'</span></span>'
@@ -2297,12 +2455,12 @@ function openExpense(id){
     }
     S.sheet={kind:"expense",gid:g.id,id:e.id,desc:e.desc,
       amount:(e.cents/100).toFixed(cinfo(g.currency).d),date:e.date,category:e.category,
-      note:e.note||"",mode:e.mode||"equal",sel:sel,raw:raw,every:"none",
+      note:e.note||"",mode:e.mode||"equal",sel:sel,raw:raw,rule:null,step:null,cust:null,
       multiPay:e.payers.length>1,payer:e.payers[0]?e.payers[0].m:me,payerOrder:order,payRaw:payRaw};
   }else{
     var all=g.members.map(function(m){return m.id;});
     S.sheet={kind:"expense",gid:g.id,id:null,desc:"",amount:"",date:today(),category:"food",
-      note:"",mode:"equal",sel:all,raw:{},every:"none",multiPay:false,payer:me||all[0],
+      note:"",mode:"equal",sel:all,raw:{},rule:null,step:null,cust:null,multiPay:false,payer:me||all[0],
       payerOrder:all.slice(),payRaw:{}};
   }
   S.confirm=null;render();
@@ -2344,11 +2502,11 @@ function saveExpense(){
   if(prev&&prev.series)body.series=prev.series;
   /* The expense being saved is the first of the run, so the series counts from
      its date and makes nothing until the next one falls due. */
-  var every=(F.every&&F.every!=="none"&&!body.series&&isDate(F.date))?F.every:null;
-  if(every){
+  var rule=(F.rule&&F.rule.unit&&!body.series&&isDate(F.date))?F.rule:null;
+  if(rule){
     var sid=uid();
     body.series=sid;
-    put("series",sid,{id:sid,gid:g.id,every:every,anchor:F.date,stopped:null,
+    put("series",sid,{id:sid,gid:g.id,rule:rule,anchor:F.date,stopped:null,
       createdAt:Date.now(),
       tmpl:{desc:body.desc,cents:body.cents,category:body.category,note:body.note,
         mode:body.mode,payers:body.payers,shares:body.shares,rawSplit:body.rawSplit}});
@@ -2357,8 +2515,8 @@ function saveExpense(){
   S.sheet=null;S.confirm=null;render();
   /* A repeat dated back a few months owes the dates in between straight away,
      rather than when the app is next opened. */
-  if(every)runSeries();
-  toast(every?"Added “"+body.desc+"”, and again "+EVERYNOTE[every]+" from now on."
+  if(rule)runSeries();
+  toast(rule?"Added “"+body.desc+"” — "+ruleText(rule,F.date).toLowerCase()+" from now on."
     :F.id?"Expense updated.":"Added “"+body.desc+"”.");
 }
 function saveGroup(){
@@ -2584,7 +2742,24 @@ document.addEventListener("click",function(ev){
     if(act)act();
     return;
   }
-  if(a==="frepeat"){S.sheet.every=t.getAttribute("data-v");render();return;}
+  if(a==="repeatopen"){S.sheet.step="repeat";render();return;}
+  if(a==="repeatback"){S.sheet.step=S.sheet.step==="custom"?"repeat":null;render();return;}
+  if(a==="repeatpick"){
+    var pick=t.getAttribute("data-v"),opts=repeatChoices(S.sheet.date),oi;
+    for(oi=0;oi<opts.length;oi++)if(opts[oi].id===pick)S.sheet.rule=opts[oi].rule;
+    S.sheet.step=null;render();return;
+  }
+  if(a==="repeatcustom"){
+    var r0=S.sheet.rule;
+    S.sheet.cust={unit:r0&&r0.unit?r0.unit:"month",n:r0&&r0.n>0?r0.n:1,by:!!(r0&&r0.by)};
+    S.sheet.step="custom";render();return;
+  }
+  if(a==="runit"){S.sheet.cust.unit=t.getAttribute("data-v");render();return;}
+  if(a==="rby"){S.sheet.cust.by=t.getAttribute("data-v")==="dow";render();return;}
+  if(a==="repeatsave"){
+    S.sheet.rule=custRule(S.sheet.cust,S.sheet.date);
+    S.sheet.step=null;render();return;
+  }
   if(a==="series"){S.sheet={kind:"series",gid:S.gid};render();return;}
   if(a==="stopseries"){
     var ssid=t.getAttribute("data-id"),ser=S.series[ssid];
@@ -2639,6 +2814,8 @@ document.addEventListener("input",function(ev){
   if(sp){S.sheet.raw[sp]=el.value;softRender(el);return;}
   var pay=el.getAttribute("data-pay");
   if(pay){S.sheet.payRaw[pay]=el.value;softRender(el);return;}
+  var rn=el.getAttribute("data-rn");
+  if(rn!==null&&S.sheet.cust){S.sheet.cust.n=el.value;softRender(el);return;}
   var nm=el.getAttribute("data-name");
   if(nm!==null){S.sheet.names[parseInt(nm,10)]=el.value;revalidate();return;}
 });
@@ -2699,8 +2876,10 @@ function revalidate(){
 var softT=null;
 function softRender(el){
   if(softT)clearTimeout(softT);
-  var kf=el.getAttribute("data-f"),ks=el.getAttribute("data-split"),kp=el.getAttribute("data-pay");
-  var sel=kf?'[data-f="'+kf+'"]':ks?'[data-split="'+ks+'"]':kp?'[data-pay="'+kp+'"]':null;
+  var kf=el.getAttribute("data-f"),ks=el.getAttribute("data-split"),kp=el.getAttribute("data-pay"),
+      kr=el.getAttribute("data-rn");
+  var sel=kf?'[data-f="'+kf+'"]':ks?'[data-split="'+ks+'"]':kp?'[data-pay="'+kp+'"]'
+    :kr?'[data-rn="'+kr+'"]':null;
   var pos=null;
   try{pos=el.selectionStart;}catch(e){}
   softT=setTimeout(function(){
