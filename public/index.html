@@ -564,6 +564,7 @@ async function sync(){
     }
     S.lastSync=Date.now();
     persist();setStatus("ok");render();
+    maybeAskWhoAmI();
   }catch(err){
     setStatus("off");
     if(err&&(err.code==="unauthorised"||err.status===401||err.status===404))
@@ -1227,6 +1228,7 @@ function renderSheet(){
   else if(k==="members")h=sheetMembers();
   else if(k==="gmenu")h=sheetGmenu();
   else if(k==="import")h=sheetImport();
+  else if(k==="whoami")h=sheetWhoAmI();
   else if(k==="share")h=sheetShare();
   root.innerHTML='<div class="scrim" data-act="scrim"><div class="sheet" role="dialog" aria-modal="true">'+h+'</div></div>';
 }
@@ -1421,6 +1423,31 @@ function sheetGmenu(){
     +(S.confirm==="grp:"+g.id ? warn : "Delete group")
     +'</button></div></div>'
     +'<div class="sfoot"><button class="btn" data-act="close">Close</button></div>';
+}
+/* A device that joined by link has no idea which person is holding it.
+   Guessing at the first member gets it right half the time, and when it is
+   wrong every "you owe / you lent" figure reads backwards, headline
+   included. So ask once, per device. */
+function sheetWhoAmI(){
+  var g=S.groups[S.sheet.gid],i;
+  if(!g)return "";
+  var h='<div class="shead"><h2>Which one are you?</h2></div><div class="sbody">'
+    +'<p style="margin-top:0">This device has joined <b>'+esc(g.name)+'</b>. Tell it who you are, '
+    +'and the “you owe / you lent” figures will be shown from your side.</p>';
+  for(i=0;i<g.members.length;i++)
+    h+='<div class="field"><button class="btn block" data-act="setwho" data-id="'
+      +esc(g.members[i].id)+'">'+esc(g.members[i].name)+'</button></div>';
+  return h+'<p class="note">Only this device is affected, and you can change it any time from '
+    +'the “You are” box above the expenses.</p></div>';
+}
+function maybeAskWhoAmI(){
+  if(S.sheet||!S.ready)return;
+  var gs=groupList();
+  if(!gs.length)return;
+  var g=S.groups[S.gid]||gs[0];
+  if(!g||g.members.length<2||S.me[g.id])return;
+  S.sheet={kind:"whoami",gid:g.id};
+  render();
 }
 function sheetImport(){
   var F=S.sheet,g=S.groups[F.gid],i,j;
@@ -1648,7 +1675,18 @@ document.addEventListener("click",function(ev){
   var a=t.getAttribute("data-act");
   if(a!=="delexp"&&a!=="delgroup"&&a!=="rmmember"&&a!=="leavespace")S.confirm=null;
 
-  if(a==="scrim"){if(ev.target===t){S.sheet=null;S.confirm=null;render();}return;}
+  if(a==="scrim"){
+    /* the identity question needs an answer, so it ignores a stray tap outside */
+    if(ev.target===t&&S.sheet&&S.sheet.kind!=="whoami"){S.sheet=null;S.confirm=null;render();}
+    return;
+  }
+  if(a==="setwho"){
+    var who=t.getAttribute("data-id"),wg=S.groups[S.sheet.gid];
+    S.me[S.sheet.gid]=who;lsSet("evenly.me",S.me);
+    S.sheet=null;render();
+    toast("Set. Figures on this device are now shown from "+memName(wg,who)+"’s side.");
+    return;
+  }
   if(a==="close"){S.sheet=null;S.confirm=null;render();return;}
   if(a==="pick"){S.gid=t.getAttribute("data-id");lsSet("evenly.gid",S.gid);S.tab="expenses";S.shown=200;render();return;}
   if(a==="tab"){S.tab=t.getAttribute("data-tab");render();return;}
@@ -1773,7 +1811,7 @@ document.addEventListener("change",function(ev){
   if(f&&el.tagName==="SELECT"){S.sheet[f]=el.value;render();}
 });
 document.addEventListener("keydown",function(ev){
-  if(ev.key==="Escape"&&S.sheet){S.sheet=null;S.confirm=null;render();}
+  if(ev.key==="Escape"&&S.sheet&&S.sheet.kind!=="whoami"){S.sheet=null;S.confirm=null;render();}
 });
 document.addEventListener("visibilitychange",function(){
   if(document.visibilityState==="visible"&&S.space)sync();
@@ -1842,6 +1880,7 @@ loadData();
 S.ready=true;
 setStatus(S.space?"busy":"local");
 render();
+maybeAskWhoAmI();
 
 if(S.space){
   if(self.crypto&&self.crypto.subtle){
