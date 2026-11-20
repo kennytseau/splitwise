@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Evenly</title>
 <meta name="description" content="Split shared costs between the people you live and travel with.">
-<meta name="theme-color" content="#F1F4F2" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#0C1411" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#F0F4F4" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0B1414" media="(prefers-color-scheme: dark)">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Evenly">
 <link rel="manifest" href="manifest.webmanifest">
@@ -18,31 +18,34 @@
 /* Layout: sticky ledger rail of groups beside a scrolling detail column; collapses to one column with a group chip strip. */
 :root{
   color-scheme:light;
-  --bg:#F1F4F2; --surface:#FFFFFF; --surface-2:#E9EEEB;
-  --ink:#10201B; --muted:#5B6E67; --faint:#8A9B94;
-  --line:#DBE3DF; --line-strong:#C3CFC9;
-  --accent:#0E7C66; --accent-soft:#D9EDE6;
-  --credit:#0E7C66; --debit:#B2452E; --neutral:#7A8B84;
+  --bg:#F0F4F4; --surface:#FFFFFF; --surface-2:#E8EEEE;
+  --ink:#102020; --muted:#5B6E6E; --faint:#8A9B9B;
+  --line:#DAE3E3; --line-strong:#C2CFCF;
+  /* Tiffany blue reads beautifully as a fill and badly as text: on white it
+     comes out at about 2.4:1, so anything that has to be READ uses the same
+     hue taken darker. --accent fills, --accent-ink is for type. */
+  --accent:#0ABAB5; --accent-soft:#D9F2F1; --accent-ink:#077E7A;
+  --credit:#077E7A; --debit:#B2452E; --neutral:#7A8B8B;
   --font-display:'Bricolage Grotesque','Inter',system-ui,sans-serif;
   --font-ui:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
-  --r:12px; --shadow:0 1px 2px rgba(16,32,27,.06),0 8px 24px rgba(16,32,27,.05);
+  --r:12px; --shadow:0 1px 2px rgba(16,32,32,.06),0 8px 24px rgba(16,32,32,.05);
 }
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
   color-scheme:dark;
-  --bg:#0C1411; --surface:#141E1A; --surface-2:#1B2721;
-  --ink:#E7EFEB; --muted:#93A69E; --faint:#6E817A;
-  --line:#22302A; --line-strong:#32433B;
-  --accent:#44CBA6; --accent-soft:#17322A;
-  --credit:#44CBA6; --debit:#EE8B6E; --neutral:#7E918A;
+  --bg:#0B1414; --surface:#131E1E; --surface-2:#1A2727;
+  --ink:#E6EFEF; --muted:#93A6A6; --faint:#6E8181;
+  --line:#213030; --line-strong:#314343;
+  --accent:#0ABAB5; --accent-soft:#143130; --accent-ink:#4FD6D0;
+  --credit:#4FD6D0; --debit:#EE8B6E; --neutral:#7E9191;
   --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35);
 }}
 :root[data-theme="dark"]{
   color-scheme:dark;
-  --bg:#0C1411; --surface:#141E1A; --surface-2:#1B2721;
-  --ink:#E7EFEB; --muted:#93A69E; --faint:#6E817A;
-  --line:#22302A; --line-strong:#32433B;
-  --accent:#44CBA6; --accent-soft:#17322A;
-  --credit:#44CBA6; --debit:#EE8B6E; --neutral:#7E918A;
+  --bg:#0B1414; --surface:#131E1E; --surface-2:#1A2727;
+  --ink:#E6EFEF; --muted:#93A6A6; --faint:#6E8181;
+  --line:#213030; --line-strong:#314343;
+  --accent:#0ABAB5; --accent-soft:#143130; --accent-ink:#4FD6D0;
+  --credit:#4FD6D0; --debit:#EE8B6E; --neutral:#7E9191;
   --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px rgba(0,0,0,.35);
 }
 *{box-sizing:border-box}
@@ -55,7 +58,7 @@ img{max-width:100%}
 h1,h2,h3{font-family:var(--font-display);font-weight:600;text-wrap:balance;margin:0;letter-spacing:-.01em}
 button{font:inherit;color:inherit;cursor:pointer;border:0;background:none}
 input,select,textarea{font:inherit;color:inherit}
-:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+:focus-visible{outline:2px solid var(--accent-ink);outline-offset:2px;border-radius:6px}
 .num{font-variant-numeric:tabular-nums}
 .wrap{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));max-width:1140px;margin:0 auto}
 
@@ -93,7 +96,7 @@ input,select,textarea{font:inherit;color:inherit}
 .gitem .gb{font-size:12.5px;color:var(--muted)}
 @media (max-width:900px){.gitem{flex:0 0 auto;max-width:200px}}
 .railbtn{margin-top:4px;padding:10px 12px;border-radius:10px;border:1px dashed var(--line-strong);color:var(--muted);font-size:14px;text-align:left;white-space:nowrap}
-.railbtn:hover{color:var(--accent);border-color:var(--accent)}
+.railbtn:hover{color:var(--accent-ink);border-color:var(--accent-ink)}
 
 /* group header */
 .ghead{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);overflow:hidden}
@@ -102,9 +105,11 @@ input,select,textarea{font:inherit;color:inherit}
 .ghead .sub{font-size:13px;color:var(--muted);margin-top:3px}
 .ghead-actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
 .btn{padding:8px 14px;border-radius:9px;border:1px solid var(--line-strong);background:var(--surface);font-size:14px;font-weight:500;white-space:nowrap}
-.btn:hover{border-color:var(--accent);color:var(--accent)}
-.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
-.btn.primary:hover{color:#fff;filter:brightness(1.07)}
+.btn:hover{border-color:var(--accent-ink);color:var(--accent-ink)}
+/* Dark type on the Tiffany fill, the way the box itself is labelled -- white
+   on this blue is unreadable. */
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#04302E}
+.btn.primary:hover{color:#04302E;filter:brightness(1.07)}
 .btn.ghost{border-color:transparent;color:var(--muted);padding:8px 10px}
 .btn.ghost:hover{background:var(--surface-2);color:var(--ink)}
 .btn.danger:hover{border-color:var(--debit);color:var(--debit)}
@@ -136,7 +141,7 @@ input,select,textarea{font:inherit;color:inherit}
 .rdate{text-align:center;line-height:1.15}
 .rdate .d{display:block;font-family:var(--font-display);font-size:16px}
 .rdate .m{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint)}
-.icn{width:34px;height:34px;border-radius:9px;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center}
+.icn{width:34px;height:34px;border-radius:9px;background:var(--accent-soft);color:var(--accent-ink);display:grid;place-items:center}
 .icn svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .rmain{min-width:0}
 .rtitle{display:block;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -192,7 +197,7 @@ input,select,textarea{font:inherit;color:inherit}
 .act .when{font-size:12px;color:var(--faint)}
 
 /* sheet */
-.scrim{position:fixed;inset:0;background:rgba(10,20,17,.45);z-index:40;display:flex;align-items:flex-end;justify-content:center;overflow-y:auto}
+.scrim{position:fixed;inset:0;background:rgba(10,20,20,.45);z-index:40;display:flex;align-items:flex-end;justify-content:center;overflow-y:auto}
 @media (min-width:640px){.scrim{align-items:center;padding:24px}}
 .sheet{background:var(--surface);width:100%;max-width:520px;border-radius:16px 16px 0 0;box-shadow:0 -8px 40px rgba(0,0,0,.3);max-height:92vh;overflow-y:auto;
   padding-bottom:max(16px,env(safe-area-inset-bottom,0px))}
@@ -204,7 +209,7 @@ input,select,textarea{font:inherit;color:inherit}
 .field{margin-bottom:14px}
 .field > label,.flabel{display:block;font-size:11.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--faint);font-weight:600;margin-bottom:5px}
 .inp{width:100%;padding:9px 11px;border:1px solid var(--line-strong);border-radius:9px;background:var(--bg)}
-.inp:focus{border-color:var(--accent);outline:none}
+.inp:focus{border-color:var(--accent-ink);outline:none}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 @media (max-width:460px){.two{grid-template-columns:1fr}}
 .seg{display:flex;gap:4px;background:var(--surface-2);padding:3px;border-radius:10px;flex-wrap:wrap}
@@ -219,7 +224,7 @@ button.splitrow[aria-pressed="true"] .cell{color:var(--ink)}
 [aria-pressed="true"] .tick{background:var(--accent);border-color:var(--accent)}
 [aria-pressed="true"] .tick::after{opacity:1}
 .bigamt{display:flex;align-items:center;gap:10px;background:var(--surface-2);border:1px solid var(--line-strong);border-radius:12px;padding:8px 14px}
-.bigamt:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.bigamt:focus-within{border-color:var(--accent-ink);box-shadow:0 0 0 3px var(--accent-soft)}
 .bigamt .sym{font-size:17px;color:var(--muted);font-weight:600;flex:0 0 auto}
 .bigamt input{flex:1;min-width:0;border:0;background:none;outline:none;padding:4px 0;font-family:var(--font-display);font-size:30px;font-weight:600;letter-spacing:-.02em}
 /* The sheet carries bottom padding for the home indicator, and a sticky
@@ -238,7 +243,7 @@ button.splitrow[aria-pressed="true"] .cell{color:var(--ink)}
 .serow .sub{display:block;font-size:12.5px;color:var(--muted);margin-top:3px}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .chip{padding:6px 11px;border-radius:20px;border:1px solid var(--line-strong);font-size:13px}
-.chip[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.chip[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent-ink);color:var(--accent-ink)}
 .splitrow{display:grid;grid-template-columns:minmax(0,1fr) 94px;gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid var(--line)}
 .splitrow:nth-last-child(2),.splitrow:last-child{border-bottom:0}
 .splitrow .nm{display:flex;align-items:center;gap:8px;min-width:0}
