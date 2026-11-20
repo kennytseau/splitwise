@@ -75,6 +75,9 @@ input,select,textarea{font:inherit;color:inherit}
 .sync.off .led{background:var(--debit)}
 .sync:hover{border-color:var(--accent);color:var(--ink)}
 
+.notice{background:var(--accent-soft);border-bottom:1px solid var(--line);font-size:13px}
+.notice .wrap{padding-block:8px}
+
 /* shell */
 .shell{display:grid;grid-template-columns:260px minmax(0,1fr);gap:26px;padding-block:22px 48px;align-items:start}
 @media (max-width:900px){.shell{grid-template-columns:minmax(0,1fr);gap:16px}}
@@ -221,6 +224,7 @@ input,select,textarea{font:inherit;color:inherit}
   <button class="sync" id="sync" data-act="share"><span class="led"></span><span id="synctext">On this device</span></button>
   <div class="overall" id="overall"></div>
 </div></header>
+<div class="notice" id="notice" hidden><div class="wrap"><span id="noticetext"></span></div></div>
 <div class="wrap shell">
   <aside class="rail" id="rail"></aside>
   <main class="pane" id="pane"><div class="card"><div class="skel">Loading…</div></div></main>
@@ -360,7 +364,7 @@ var S={
   space:null,                                    /* {id, key} when shared */
   cursor:0,
   status:"local",                                /* local | ok | busy | off */
-  lastSync:0,queued:0,
+  lastSync:0,queued:0,storageOk:null,
   shown:200,                                     /* expense rows drawn at once */
   gid:null,tab:"expenses",sheet:null,confirm:null,me:{},ready:false
 };
@@ -380,19 +384,100 @@ function rebuildViews(){
     S[kind]=out;
   }
 }
+/* The record cache lives in IndexedDB, not localStorage. Years of history
+   run to megabytes, and a multi-megabyte localStorage write is refused
+   outright on phones -- silently, because the throw is swallowed and the
+   page carries on looking fine until the next reload finds nothing. Small
+   preferences stay in localStorage, where their size is never a problem. */
+var IDB_NAME="evenly",IDB_STORE="cache",idbReady=null;
+function idbOpen(){
+  if(idbReady)return idbReady;
+  idbReady=new Promise(function(res){
+    try{
+      if(!self.indexedDB)return res(null);
+      var rq=indexedDB.open(IDB_NAME,1);
+      rq.onupgradeneeded=function(){
+        if(!rq.result.objectStoreNames.contains(IDB_STORE))rq.result.createObjectStore(IDB_STORE);
+      };
+      rq.onsuccess=function(){res(rq.result);};
+      rq.onerror=function(){res(null);};
+      rq.onblocked=function(){res(null);};
+    }catch(e){res(null);}
+  });
+  return idbReady;
+}
+function idbGet(key){
+  return idbOpen().then(function(db){
+    if(!db)return null;
+    return new Promise(function(res){
+      try{
+        var rq=db.transaction(IDB_STORE,"readonly").objectStore(IDB_STORE).get(key);
+        rq.onsuccess=function(){res(rq.result||null);};
+        rq.onerror=function(){res(null);};
+      }catch(e){res(null);}
+    });
+  });
+}
+function idbPut(key,val){
+  return idbOpen().then(function(db){
+    if(!db)return false;
+    return new Promise(function(res){
+      try{
+        var tx=db.transaction(IDB_STORE,"readwrite");
+        tx.objectStore(IDB_STORE).put(val,key);
+        tx.oncomplete=function(){res(true);};
+        tx.onerror=function(){res(false);};
+        tx.onabort=function(){res(false);};
+      }catch(e){res(false);}
+    });
+  });
+}
+function flagStorage(ok){
+  if(S.storageOk===ok)return;
+  S.storageOk=ok;
+  render();
+}
+function writeCache(key,payload){
+  return idbPut(key,payload).then(function(ok){
+    if(ok){
+      lsDel(key);                       /* retire any copy an older version left */
+      flagStorage(true);
+      return true;
+    }
+    var fine=true;
+    try{localStorage.setItem(key,JSON.stringify(payload));}catch(e){fine=false;}
+    flagStorage(fine);
+    return fine;
+  });
+}
+var persistT=null;
+/* Coalesced: a long sync writes after every chunk. The key is captured now,
+   so a write still in flight cannot land under a space we have since left. */
 function persist(){
-  lsSet(dataKey(),{rec:S.rec,dirty:S.dirty,cursor:S.cursor});
+  var key=dataKey();
+  if(persistT)clearTimeout(persistT);
+  persistT=setTimeout(function(){
+    persistT=null;
+    writeCache(key,{rec:S.rec,dirty:S.dirty,cursor:S.cursor});
+  },500);
+}
+function persistNow(){
+  if(persistT){clearTimeout(persistT);persistT=null;}
+  return writeCache(dataKey(),{rec:S.rec,dirty:S.dirty,cursor:S.cursor});
 }
 function loadData(){
-  var d=ls(dataKey(),null);
   S.rec={groups:{},expenses:{},settlements:{}};
   S.dirty={};S.cursor=0;
-  if(d&&d.rec){
-    for(var k=0;k<KINDS.length;k++)if(d.rec[KINDS[k]])S.rec[KINDS[k]]=d.rec[KINDS[k]];
-    S.dirty=d.dirty||{};
-    S.cursor=d.cursor||0;
-  }
-  rebuildViews();
+  var key=dataKey();
+  return idbGet(key).then(function(d){
+    if(!d)d=ls(key,null);               /* older versions kept it in localStorage */
+    if(d&&d.rec){
+      for(var k=0;k<KINDS.length;k++)if(d.rec[KINDS[k]])S.rec[KINDS[k]]=d.rec[KINDS[k]];
+      S.dirty=d.dirty||{};
+      S.cursor=d.cursor||0;
+    }
+    rebuildViews();
+  });
 }
 
 /* ========================================================================
@@ -587,20 +672,31 @@ function readShareHash(){
   var m=/[#&]l=([A-Za-z0-9_-]{6,64})/.exec(h),k=/[#&]k=([a-f0-9]{32,80})/.exec(h);
   return (m&&k)?{id:m[1],key:k[1]}:null;
 }
-function clearShareHash(){
-  if(location.hash&&history.replaceState)
-    history.replaceState(null,"",location.pathname+location.search);
+/* The key stays in the address bar on purpose. Stripping it looked tidier,
+   but a device whose storage is cleared or refused -- an in-app browser from
+   a messaging app, a private window, a phone evicting a site it has not seen
+   for a week -- then holds neither the key nor the cache, and an ordinary
+   refresh locks that person out of the ledger permanently. Keeping it means
+   a refresh, a bookmark or a reopened tab all still carry the key. */
+function keepShareHash(){
+  if(!history.replaceState)return;
+  var want=S.space?"#l="+S.space.id+"&k="+S.space.key:"";
+  if(location.hash===want)return;
+  try{history.replaceState(null,"",location.pathname+location.search+want);}catch(e){}
 }
 function leaveSpace(){
-  persist();
-  S.space=null;KEYS=null;
-  lsDel("evenly.space");
-  if(pollT)clearInterval(pollT);
-  loadData();
-  S.gid=null;
-  setStatus("local");
-  render();
-  toast("Back to this device only. The shared copy is untouched.");
+  persistNow().then(function(){
+    S.space=null;KEYS=null;
+    lsDel("evenly.space");
+    keepShareHash();
+    if(pollT)clearInterval(pollT);
+    return loadData();
+  }).then(function(){
+    S.gid=null;
+    setStatus("local");
+    render();
+    toast("Back to this device only. The shared copy is untouched.");
+  });
 }
 function createSpace(){
   if(!(self.crypto&&self.crypto.subtle)){
@@ -618,6 +714,7 @@ function createSpace(){
       S.space={id:res.id,key:secret};
       KEYS=keys;
       lsSet("evenly.space",S.space);
+      keepShareHash();
       S.rec=carried;S.cursor=0;S.dirty={};
       for(k=0;k<KINDS.length;k++)
         for(id in S.rec[KINDS[k]])S.dirty[KINDS[k]+"/"+id]=1;
@@ -983,6 +1080,16 @@ function toast(msg){
 /* ========================================================================
    Render
    ====================================================================== */
+function renderNotice(){
+  var box=document.getElementById("notice"),txt=document.getElementById("noticetext");
+  if(!box)return;
+  var msg="";
+  if(S.storageOk===false)
+    msg="This browser will not keep a copy on the device, so the ledger is fetched again "
+      +"each time you open it. Nothing is lost — it is all on the server.";
+  if(msg){txt.textContent=msg;box.hidden=false;}
+  else box.hidden=true;
+}
 function renderSync(){
   var el=document.getElementById("sync"),t=document.getElementById("synctext");
   if(!el)return;
@@ -1211,7 +1318,7 @@ function render(){
   renderQ=true;
   setTimeout(function(){
     renderQ=false;
-    renderSync();renderOverall();renderRail();renderPane();renderSheet();
+    renderNotice();renderSync();renderOverall();renderRail();renderPane();renderSheet();
   },0);
 }
 
@@ -1869,33 +1976,33 @@ S.space=ls("evenly.space",null);
 
 var invite=readShareHash();
 if(invite&&(!S.space||invite.id!==S.space.id||invite.key!==S.space.key)){
-  if(S.space)persist();
+  /* No persist() here: nothing has been loaded yet, so writing now would put
+     an empty ledger over the cache of the space being left. */
   S.space=invite;
   lsSet("evenly.space",invite);
   S.gid=null;
 }
-clearShareHash();
+keepShareHash();
 
-loadData();
-S.ready=true;
-setStatus(S.space?"busy":"local");
-render();
-maybeAskWhoAmI();
-
-if(S.space){
-  if(self.crypto&&self.crypto.subtle){
-    deriveKeys(S.space.key)
-      .then(function(k){KEYS=k;return sync();})
-      .then(startPolling)
-      .catch(function(){
-        setStatus("off");
-        toast("Could not unlock this shared space on this device.");
-      });
-  }else{
+loadData().then(function(){
+  S.ready=true;
+  setStatus(S.space?"busy":"local");
+  render();
+  maybeAskWhoAmI();
+  if(!S.space)return;
+  if(!(self.crypto&&self.crypto.subtle)){
     setStatus("off");
     toast("Shared spaces need a secure connection. Open this app over https.");
+    return;
   }
-}
+  return deriveKeys(S.space.key)
+    .then(function(k){KEYS=k;return sync();})
+    .then(startPolling)
+    .catch(function(){
+      setStatus("off");
+      toast("Could not unlock this shared space on this device.");
+    });
+});
 })();
 </script>
 </body>
