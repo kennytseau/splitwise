@@ -113,6 +113,7 @@ input,select,textarea{font:inherit;color:inherit}
 .stat:last-child{border-right:0}
 .stat .k{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);font-weight:600}
 .stat .v{font-family:var(--font-display);font-size:20px;margin-top:2px;letter-spacing:-.015em}
+.stat .s{font-size:11.5px;color:var(--faint);margin-top:1px}
 .pos{color:var(--credit)} .neg{color:var(--debit)} .zero{color:var(--neutral)}
 .whoami{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--muted);padding:11px 18px;border-top:1px solid var(--line);background:var(--surface-2);flex-wrap:wrap}
 .whoami select{background:var(--surface);border:1px solid var(--line-strong);border-radius:8px;padding:4px 8px;font-size:13px}
@@ -314,6 +315,10 @@ function today(){
 function dparts(s){
   var m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s||""));
   return m?{y:+m[1],m:+m[2]-1,d:+m[3]}:{y:1970,m:0,d:1};
+}
+function shortDate(iso){
+  var d=dparts(iso);
+  return d.d+" "+MON[d.m]+(d.y!==new Date().getFullYear()?" "+d.y:"");
 }
 function ago(ms){
   var s=Math.max(0,Math.round((Date.now()-ms)/1000));
@@ -1038,11 +1043,18 @@ function renderPane(){
   if(!S.gid||!S.groups[S.gid])S.gid=gs[0].id;
   var g=S.groups[S.gid],me=meOf(g.id),n=nets(g.id);
   var ex=expensesOf(g.id),st=settlementsOf(g.id),i,j;
-  var totalSpend=0;
-  for(i=0;i<ex.length;i++)totalSpend+=ex[i].cents;
-  var myShare=0;
-  if(me)for(i=0;i<ex.length;i++)for(j=0;j<ex[i].shares.length;j++)
-    if(ex[i].shares[j].m===me)myShare+=ex[i].shares[j].cents;
+  /* Spend is counted from the last settlement onwards. A ledger running for
+     years has an all-time total nobody needs; what matters is what has piled
+     up since you last squared off. The balance below stays all-time, because
+     that is the actual debt. */
+  var since=st.length?st[0].date:null;
+  var win=since?ex.filter(function(e){return e.date>=since;}):ex;
+  var windowSpend=0,myShare=0;
+  for(i=0;i<win.length;i++){
+    windowSpend+=win[i].cents;
+    if(me)for(j=0;j<win[i].shares.length;j++)
+      if(win[i].shares[j].m===me)myShare+=win[i].shares[j].cents;
+  }
   var mine=me?(n[me]||0):0;
 
   var h='<div class="ghead"><div class="ghead-top"><div style="min-width:0">'
@@ -1055,11 +1067,16 @@ function renderPane(){
     +'<button class="btn ghost" data-act="gmenu">More</button>'
     +'</div></div>'
     +'<div class="stats">'
-    +'<div class="stat"><div class="k">Group total</div><div class="v num">'+esc(fmt(totalSpend,g.currency))+'</div></div>'
-    +'<div class="stat"><div class="k">Your share</div><div class="v num">'+esc(fmt(myShare,g.currency))+'</div></div>'
+    +'<div class="stat"><div class="k">'+(since?"Spent since "+esc(shortDate(since)):"Group total")+'</div>'
+    +'<div class="v num">'+esc(fmt(windowSpend,g.currency))+'</div>'
+    +'<div class="s">'+win.length+(win.length===1?" expense":" expenses")
+    +(since?" since you settled up":"")+'</div></div>'
+    +'<div class="stat"><div class="k">Your share</div><div class="v num">'+esc(fmt(myShare,g.currency))+'</div>'
+    +'<div class="s">'+(since?"of that":"of everything")+'</div></div>'
     +'<div class="stat"><div class="k">'+(mine>0?"You are owed":mine<0?"You owe":"Your balance")+'</div>'
     +'<div class="v num '+(mine>0?"pos":mine<0?"neg":"zero")+'">'
-    +esc(mine===0?"settled":fmt(Math.abs(mine),g.currency))+'</div></div>'
+    +esc(mine===0?"settled":fmt(Math.abs(mine),g.currency))+'</div>'
+    +'<div class="s">running total, all time</div></div>'
     +'</div>'
     +'<div class="whoami"><label for="mesel">You are</label><select id="mesel">';
   for(i=0;i<g.members.length;i++)
