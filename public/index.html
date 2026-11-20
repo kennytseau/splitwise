@@ -1834,7 +1834,37 @@ function sheetClassify(){
   if(list.length>shown)
     h+='<button class="btn block" data-act="morecats" style="margin-top:10px">Show more — '
       +(list.length-shown)+' still unclassified</button>';
+  h+='<div class="field" style="margin-top:18px"><span class="flabel">Or paste a list</span>'
+    +'<textarea class="inp" id="bulkrules" rows="4" placeholder="Woolies, Groceries'
+    +'&#10;Kmart, Household goods"></textarea>'
+    +'<button class="btn block" data-act="bulkrules" style="margin-top:8px">Apply pasted list</button>'
+    +'<p class="note" style="margin-top:6px">One per line: the name, a comma, then the category. '
+    +'Rows copied out of a spreadsheet work too — the first column is read as the name and the '
+    +'last as the category.</p></div>';
   return h+'</div><div class="sfoot"><button class="btn primary" data-act="close">Done</button></div>';
+}
+/* Working down a thousand names one dropdown at a time is nobody's evening.
+   Takes "name, category" per line, and also the exported rows as they are,
+   so a list can be filled in elsewhere and applied in one go. */
+function applyBulkRules(gid,text){
+  var lines=String(text).split(/\r\n|\n|\r/),cats=catsFor(gid),byLabel={},i;
+  for(i=0;i<cats.length;i++)byLabel[cats[i].label.toLowerCase()]=cats[i].id;
+  var cur=S.rules[gid],body=cur?JSON.parse(JSON.stringify(cur)):{};
+  if(!body.map)body.map={};
+  var ok=0,bad=0;
+  for(i=0;i<lines.length;i++){
+    var line=lines[i].trim();
+    if(!line)continue;
+    var f=splitCsvLine(line);
+    if(f.length<2){bad++;continue;}
+    var name=normDesc(f[0]),cat=String(f[f.length-1]).trim().toLowerCase();
+    var id=byLabel[cat];
+    if(!name||!id){bad++;continue;}
+    body.map[name]=id;ok++;
+  }
+  body.id=gid;body.gid=gid;body.updatedAt=Date.now();
+  if(ok)put("rules",gid,body);
+  toast(ok+" applied"+(bad?", "+bad+" line"+(bad===1?"":"s")+" not understood":"")+".");
 }
 function sheetWhoAmI(){
   var g=S.groups[S.sheet.gid],i;
@@ -2102,6 +2132,12 @@ document.addEventListener("click",function(ev){
   if(a==="pickmonth"){S.month=t.getAttribute("data-m");render();return;}
   if(a==="classify"){S.showCats=12;S.catQuery="";S.sheet={kind:"classify",gid:S.gid};render();return;}
   if(a==="morecats"){S.showCats+=12;render();return;}
+  if(a==="bulkrules"){
+    var ta=document.getElementById("bulkrules");
+    if(!ta||!ta.value.trim()){toast("Paste some lines first.");return;}
+    applyBulkRules(S.sheet.gid,ta.value);
+    return;
+  }
   if(a==="addcat"){
     var nmEl=document.getElementById("newcat"),bkEl=document.getElementById("newcatbucket");
     if(!nmEl||!nmEl.value.trim()){toast("Give the category a name first.");return;}
