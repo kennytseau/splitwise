@@ -110,6 +110,23 @@ edit that ledger**, so send it somewhere private. There is no reset and no
 recovery: if the link is lost, the data is unreadable for good, and if it leaks,
 the only remedy is a new space. Export a CSV now and then if that matters.
 
+**The key stays in the address bar**, deliberately. It is tempting to strip it
+after the first load, but then the device holds the key in exactly one place —
+its storage — and browsers clear storage routinely: private windows, in-app
+browsers opened from a messaging app, a phone evicting a site it has not seen
+for a week. A refresh then locks that person out for good. Leaving it in the
+URL means a refresh, a bookmark or a reopened tab all still carry it, at the
+cost of the key being visible on screen and in browser history.
+
+### Local storage
+
+Each device keeps a full decrypted copy so the app works offline. It lives in
+**IndexedDB**: a ledger with years of history runs to megabytes, and a write
+that size is refused outright by `localStorage` on phones — silently, since the
+throw is easy to swallow. Only small preferences (the space, which person you
+are, the last group) stay in `localStorage`. If neither will hold a copy, the
+app says so and fetches from the server on each open.
+
 Each device keeps a full local copy and syncs through a single endpoint, so the
 app keeps working with no connection and catches up when one returns. Conflicts
 resolve last-writer-wins per record, by the editing device's clock. For a
