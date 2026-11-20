@@ -1494,13 +1494,20 @@ function renderSpending(g,ex){
     +(b.count===1?" expense":" expenses")+'</span></div>';
 
   var named=b.buckets.needs+b.buckets.wants+b.buckets.savings;
-  var trio=[["needs","Needs","50"],["wants","Wants","30"],["savings","Savings","20"]];
+  /* 50/30/20 only means anything where savings are actually recorded. In a
+     ledger that tracks spending alone, a Savings tile pinned at 0% against a
+     20% target reports a failure that is not happening, so it only appears
+     once there is something in it -- and the targets come with it. */
+  var trio=[["needs","Needs","50"],["wants","Wants","30"]];
+  if(b.buckets.savings)trio.push(["savings","Savings","20"]);
+  var targets=trio.length===3;
   h+='<div class="stats">';
   for(i=0;i<trio.length;i++){
     var v=b.buckets[trio[i][0]];
     h+='<div class="stat"><div class="k">'+trio[i][1]+'</div><div class="v num">'
       +(named?Math.round(v/named*100)+"%":"—")+'</div>'
-      +'<div class="s num">'+esc(fmt(v,g.currency))+' · target '+trio[i][2]+'%</div></div>';
+      +'<div class="s num">'+esc(fmt(v,g.currency))
+      +(targets?' · target '+trio[i][2]+'%':' · of tracked spending')+'</div></div>';
   }
   h+='</div>';
 
