@@ -205,6 +205,33 @@ input,select,textarea{font:inherit;color:inherit;font-size:16px}
 .fill2{display:block;height:100%;background:var(--accent);border-radius:4px}
 .fill2.un{background:var(--line-strong)}
 .fill2.cr{background:var(--credit)}
+
+/* Six categorical slots for the spending circle, taken in the published order
+   rather than picked by eye. The slices sit end to end like a stacked bar, so
+   the gate that applies is the adjacent-pair one, and this order clears it in
+   both themes (worst colour-blind separation dE 9.1 light, 8.4 dark; worst
+   normal-vision 19.6 and 19.3). Three of the light hues fall below 3:1 against
+   the card, which is allowed only where something other than colour names the
+   slice -- here every slice is also named and totalled in the rows below, and
+   each row carries its swatch. Anything past the sixth category folds into
+   Other and takes the de-emphasis grey: a seventh hue would be a hue nobody
+   could reliably tell from one already on screen. */
+:root{--s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#0ca30c}}
+:root[data-theme="dark"]{--s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#0ca30c}
+.spanpick{padding:12px 16px}
+.spanpick + .bars{padding-top:4px}
+.pie{position:relative;width:min(252px,74vw);margin:18px auto 6px}
+.pie svg{display:block;width:100%;height:auto}
+.pie circle{fill:none;stroke-width:22}
+.pie .track{stroke:var(--surface-2)}
+.piemid{position:absolute;inset:0;display:grid;place-content:center;text-align:center;padding:0 16px;pointer-events:none}
+.piemid .pv{display:block;font-family:var(--font-display);font-size:19px;letter-spacing:-.02em}
+.piemid .pk{display:block;font-size:11.5px;color:var(--faint);margin-top:3px}
+.pienote{margin:2px 16px 14px;font-size:12.5px;color:var(--faint);text-align:center}
+.sw{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:8px;background:var(--neutral)}
+.sw.off{background:none;box-shadow:inset 0 0 0 1.5px var(--line-strong)}
 .camt{text-align:right;font-family:var(--font-display);font-size:14.5px}
 .cpct{text-align:right;font-size:12.5px;color:var(--faint)}
 @media (max-width:560px){.catrow{grid-template-columns:minmax(0,1fr) minmax(72px,auto) 38px}.track2{display:none}}
@@ -475,6 +502,8 @@ var S={
   rec:{groups:{},expenses:{},settlements:{},rules:{},series:{}},  /* id -> {body, u, d} */
   groups:{},expenses:{},settlements:{},rules:{},series:{},        /* live views, rebuilt from rec */
   month:null,                                    /* month shown on the Spending tab */
+  span:"month",                                  /* month | year | all */
+  year:null,                                     /* year shown when span is "year" */
   showCats:12,                                   /* merchants listed in the classifier */
   catQuery:"",                                   /* classifier search box */
   dirty:{},                                      /* "kind/id" -> 1, awaiting push */
@@ -1264,16 +1293,30 @@ function monthsOf(ex){
   out.sort();out.reverse();
   return out;
 }
+/* Every year that has expenses, newest first. Months arrive sorted, so the
+   years fall out of them in order. */
+function yearsOf(months){
+  var seen={},out=[],i,y;
+  for(i=0;i<months.length;i++){
+    y=months[i].slice(0,4);
+    if(!seen[y]){seen[y]=1;out.push(y);}
+  }
+  return out;
+}
 function monthLabel(m){
   var p=m.split("-");
   return MONL[(+p[1])-1]+" "+p[0];
 }
 /* Totals for one month: per category, per 50/30/20 bucket, and the whole. */
-function monthBreakdown(ex,rules,month,gid){
-  var cats={},buckets={needs:0,wants:0,savings:0,none:0},total=0,count=0,i;
+function monthBreakdown(ex,rules,month,gid){return spanBreakdown(ex,rules,gid,month);}
+/* The same, over any stretch of time, named by the date prefix it shares:
+   "2026-11" is a month, "2026" a year, "" the whole ledger. Dates are stored
+   as YYYY-MM-DD, so a prefix is all a period needs to be. */
+function spanBreakdown(ex,rules,gid,prefix){
+  var cats={},buckets={needs:0,wants:0,savings:0,none:0},total=0,count=0,i,n=prefix.length;
   for(i=0;i<ex.length;i++){
     var e=ex[i];
-    if(String(e.date).slice(0,7)!==month)continue;
+    if(n&&String(e.date).slice(0,n)!==prefix)continue;
     var id=catOf(e,rules),info=catInfo(gid,id);
     var amt=info.credit?-e.cents:e.cents;
     cats[id]=(cats[id]||0)+amt;
@@ -1760,34 +1803,110 @@ function renderExpenses(g,ex,me){
       +(ex.length-limit)+' older still hidden</button>';
   return h;
 }
+var PIE_C=276.46;   /* 2 pi r, with r = 44 in the circle's 120-unit box */
+/* What the circle can actually draw. A category in credit -- a refund -- gets
+   no slice, since a negative share of a whole is not a thing you can draw. It
+   stays in the rows underneath, and the note below the circle accounts for it. */
+function pieOf(b,gid){
+  var all=catsFor(gid),rows=[],i,v;
+  for(i=0;i<all.length;i++){
+    v=b.cats[all[i].id];
+    if(v>0)rows.push({c:all[i],v:v});
+  }
+  rows.sort(function(a,z){return z.v-a.v;});
+  var top=rows.slice(0,6),rest=rows.slice(6),other=0,sum=0,col={};
+  for(i=0;i<rest.length;i++){other+=rest[i].v;col[rest[i].c.id]="var(--neutral)";}
+  for(i=0;i<top.length;i++){col[top[i].c.id]="var(--s"+(i+1)+")";sum+=top[i].v;}
+  return {top:top,other:other,rest:rest.length,sum:sum+other,col:col};
+}
+/* One ring, one circle element per slice: a dash as long as that slice's share
+   of the circumference, pushed around the ring by everything drawn before it.
+   Taking two units off each dash leaves the gap that stops two neighbouring
+   colours reading as one block. */
+function pieSvg(p,cur,label){
+  var parts=p.top.slice(),i,cum=0,names=[],h;
+  if(p.other>0)
+    parts.push({c:{id:"other",label:"Other"+(p.rest>1?" ("+p.rest+" categories)":"")},v:p.other});
+  for(i=0;i<parts.length;i++)
+    names.push(parts[i].c.label+" "+Math.round(parts[i].v/p.sum*100)+"%");
+  h='<div class="pie"><svg viewBox="0 0 120 120" role="img" aria-label="'
+    +esc(label+": "+(names.length?names.join(", "):"nothing to show yet"))+'">'
+    +'<circle class="track" cx="60" cy="60" r="44"></circle>';
+  for(i=0;i<parts.length;i++){
+    var frac=parts[i].v/p.sum,draw=Math.max(.6,frac*PIE_C-(parts.length>1?2:0));
+    h+='<circle cx="60" cy="60" r="44" transform="rotate(-90 60 60)" style="stroke:'
+      +(i<p.top.length?"var(--s"+(i+1)+")":"var(--neutral)")+'" stroke-dasharray="'
+      +draw.toFixed(2)+' '+(PIE_C-draw).toFixed(2)+'" stroke-dashoffset="'
+      +(-cum*PIE_C).toFixed(2)+'"><title>'
+      +esc(parts[i].c.label+" — "+fmt(parts[i].v,cur)+", "+Math.round(frac*100)+"%")
+      +'</title></circle>';
+    cum+=frac;
+  }
+  return h+'</svg><div class="piemid"><span class="pv num">'+esc(fmt(p.sum,cur))
+    +'</span><span class="pk">'+esc(label)+'</span></div></div>';
+}
+function spanBtn(id,label,cur){
+  return '<button data-act="span" data-v="'+id+'" aria-pressed="'+(cur===id)+'">'+label+'</button>';
+}
+function shortPeriod(k){
+  return k.length>4?MON[(+k.split("-")[1])-1]:"’"+k.slice(2);
+}
+/* A strip of bars, one per period, that picks the period the rest of the tab
+   is about. Months and years differ only in their labels and what a tap sets. */
+function periodBars(ex,rules,g,list,chosen,act,attr,labelOf){
+  var tot=[],peak=1,i,h='<div class="bars">';
+  for(i=0;i<list.length;i++){
+    tot.push(spanBreakdown(ex,rules,g.id,list[i]).total);
+    if(tot[i]>peak)peak=tot[i];
+  }
+  for(i=0;i<list.length;i++)
+    h+='<button class="bar'+(list[i]===chosen?" on":"")+'" data-act="'+act+'" '+attr+'="'+list[i]
+      +'" title="'+esc(labelOf(list[i])+" — "+fmt(tot[i],g.currency))+'">'
+      +'<span class="col" style="height:'+Math.max(2,Math.round(tot[i]/peak*100))+'%"></span>'
+      +'<span class="lab">'+esc(shortPeriod(list[i]))+'</span></button>';
+  return h+'</div>';
+}
 function renderSpending(g,ex){
   var rules=rulesOf(g.id),months=monthsOf(ex),i;
   if(!months.length)
     return '<div class="card"><div class="empty"><h3>Nothing to break down yet</h3>'
       +'<p>Once there are expenses, this shows where the money went, month by month.</p></div></div>';
+  var years=yearsOf(months);
+  var span=(S.span==="year"||S.span==="all")?S.span:"month";
   var month=(S.month&&months.indexOf(S.month)>=0)?S.month:months[0];
-  var b=monthBreakdown(ex,rules,month,g.id);
+  var year=(S.year&&years.indexOf(S.year)>=0)?S.year:years[0];
+  var prefix=span==="all"?"":(span==="year"?year:month);
+  var title=span==="all"?"All time":(span==="year"?year:monthLabel(month));
+  var b=spanBreakdown(ex,rules,g.id,prefix);
 
-  /* twelve-month strip, oldest on the left */
-  var strip=months.slice(0,12).reverse(),tot=[],peak=1;
-  for(i=0;i<strip.length;i++){
-    tot.push(monthBreakdown(ex,rules,strip[i],g.id).total);
-    if(tot[i]>peak)peak=tot[i];
-  }
-  var h='<div class="card" style="margin-bottom:14px"><div class="mhead"><span>Spending by month</span>'
-    +'<span class="mt">'+(months.length>12?"last 12 months":months.length
-      +(months.length===1?" month":" months"))+'</span></div><div class="bars">';
-  for(i=0;i<strip.length;i++)
-    h+='<button class="bar'+(strip[i]===month?" on":"")+'" data-act="pickmonth" data-m="'+strip[i]
-      +'" title="'+esc(monthLabel(strip[i])+" — "+fmt(tot[i],g.currency))+'">'
-      +'<span class="col" style="height:'+Math.max(2,Math.round(tot[i]/peak*100))+'%"></span>'
-      +'<span class="lab">'+MON[(+strip[i].split("-")[1])-1]+'</span></button>';
-  h+='</div></div>';
+  /* how much time the tab has to work with, and the strip that chooses it */
+  var kept=span==="year"?years.length+(years.length===1?" year":" years")
+    :(span==="month"&&months.length>12?"last 12 months"
+      :months.length+(months.length===1?" month":" months"));
+  var h='<div class="card" style="margin-bottom:14px"><div class="mhead"><span>Spending</span>'
+    +'<span class="mt">'+esc(kept)+'</span></div>'
+    +'<div class="spanpick"><div class="seg">'+spanBtn("month","Month",span)
+    +spanBtn("year","Year",span)+spanBtn("all","All time",span)+'</div></div>';
+  if(span==="month")
+    h+=periodBars(ex,rules,g,months.slice(0,12).reverse(),month,"pickmonth","data-m",monthLabel);
+  else if(span==="year")
+    h+=periodBars(ex,rules,g,years.slice(0,12).reverse(),year,"pickyear","data-y",function(y){return y;});
+  h+='</div>';
 
-  /* the chosen month */
-  h+='<div class="card"><div class="mhead"><span>'+esc(monthLabel(month))+'</span>'
+  /* the chosen period */
+  h+='<div class="card"><div class="mhead"><span>'+esc(title)+'</span>'
     +'<span class="mt num">'+esc(fmt(b.total,g.currency))+' · '+b.count
     +(b.count===1?" expense":" expenses")+'</span></div>';
+
+  var p=pieOf(b,g.id);
+  h+=pieSvg(p,g.currency,title);
+  /* Whatever came back as credit over the period is not in the circle, so say
+     so rather than let the figure in the middle quietly disagree with the one
+     in the header. */
+  var back=p.sum-b.total;
+  if(back>0)
+    h+='<p class="pienote">'+esc(fmt(back,g.currency))
+      +' came back in refunds, so it is not in the circle.</p>';
 
   var named=b.buckets.needs+b.buckets.wants+b.buckets.savings;
   /* 50/30/20 only means anything where savings are actually recorded. In a
@@ -1814,7 +1933,13 @@ function renderSpending(g,ex){
   for(i=0;i<rows.length;i++){
     var r=rows[i];
     var cls=r.v<0?" cr":(r.c.id==="unclassified"?" un":"");
-    h+='<div class="catrow"><span class="cname">'+esc(r.c.label)+'</span>'
+    /* The swatch is what makes these rows the circle's key, so no slice is
+       told apart by its colour alone. A row the circle left out -- a refund --
+       gets an empty swatch rather than a colour pointing at a slice that is
+       not there. */
+    var sw=p.col[r.c.id];
+    h+='<div class="catrow"><span class="cname"><i class="sw'
+      +(sw?'" style="background:'+sw+'"':' off"')+'></i>'+esc(r.c.label)+'</span>'
       +'<span class="track2"><span class="fill2'+cls+'" style="width:'
       +Math.max(2,Math.round(Math.abs(r.v)/(max||1)*100))+'%"></span></span>'
       +'<span class="camt num'+(r.v<0?" pos":"")+'">'+esc(fmt(r.v,g.currency))+'</span>'
@@ -1822,8 +1947,10 @@ function renderSpending(g,ex){
   }
 
   var un=b.cats.unclassified||0;
+  /* "of All time" does not read as English, so the whole ledger says so. */
   if(un)
-    h+='<div class="sug"><span class="txt">'+esc(fmt(un,g.currency))+' of '+esc(monthLabel(month))
+    h+='<div class="sug"><span class="txt">'+esc(fmt(un,g.currency))+' of '
+      +esc(span==="all"?"everything logged so far":title)
       +' has no category yet, so it is left out of the needs and wants split above. '
       +'Nothing is guessed from a merchant’s name.</span>'
       +'<button class="btn" data-act="classify">Classify merchants</button></div>';
@@ -2667,6 +2794,8 @@ document.addEventListener("click",function(ev){
   if(a==="tab"){S.tab=t.getAttribute("data-tab");render();return;}
   if(a==="showmore"){S.shown+=300;render();return;}
   if(a==="pickmonth"){S.month=t.getAttribute("data-m");render();return;}
+  if(a==="pickyear"){S.year=t.getAttribute("data-y");render();return;}
+  if(a==="span"){S.span=t.getAttribute("data-v");render();return;}
   if(a==="classify"){S.showCats=12;S.catQuery="";S.sheet={kind:"classify",gid:S.gid};render();return;}
   if(a==="morecats"){S.showCats+=12;render();return;}
   if(a==="exportun"){exportUnclassified();return;}
