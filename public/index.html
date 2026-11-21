@@ -137,8 +137,7 @@ input,select,textarea{font:inherit;color:inherit;font-size:16px}
 .stat .v{font-family:var(--font-display);font-size:20px;margin-top:2px;letter-spacing:-.015em}
 .stat .s{font-size:11.5px;color:var(--faint);margin-top:1px}
 .pos{color:var(--credit)} .neg{color:var(--debit)} .zero{color:var(--neutral)}
-.whoami{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--muted);padding:11px 18px;border-top:1px solid var(--line);background:var(--surface-2);flex-wrap:wrap}
-.whoami select{background:var(--surface);border:1px solid var(--line-strong);border-radius:8px;padding:5px 8px;min-height:36px}
+
 
 /* tabs */
 /* Four tabs do not fit across a 320px screen, so the strip scrolls rather
@@ -1737,12 +1736,12 @@ function renderPane(){
     +'<div class="s">'+(since&&carried
       ? "includes "+esc(fmt(Math.abs(carried),g.currency))+" owing before "+esc(shortDate(since))
       : "every expense and payment so far")+'</div></div>'
-    +'</div>'
-    +'<div class="whoami"><label for="mesel">You are</label><select id="mesel">';
-  for(i=0;i<g.members.length;i++)
-    h+='<option value="'+esc(g.members[i].id)+'"'+(g.members[i].id===me?" selected":"")+'>'
-      +esc(g.members[i].name)+'</option>';
-  h+='</select><span>— sets whose side the “you owe / you lent” figures are from, on this device.</span></div></div>';
+    +'</div></div>';
+  /* Who this device belongs to is still a real setting -- meOf(gid) is what
+     turns the ledger into "you owe" and "you lent", and every figure above
+     reads from it. It is just not a question worth asking twice: both phones
+     have answered it, so the control moved to More rather than sitting on the
+     card for the life of the app. */
 
   h+='<div class="tabs" role="tablist">'
     +tabBtn("expenses","Expenses")+tabBtn("spending","Spending")
@@ -2378,6 +2377,10 @@ function sheetGmenu(){
   var warn="Tap again to delete this group"+(n?" and its "+n+(n===1?" expense":" expenses"):"");
   return shead(g.name)+'<div class="sbody">'
     +'<div class="field"><button class="btn block" data-act="editgroup">Rename group or change currency</button></div>'
+    +'<div class="field"><button class="btn block" data-act="whoami">You are '
+    +esc(memName(g,meOf(g.id)))+' on this device</button>'
+    +'<p class="note" style="margin-top:6px">Sets whose side the “you owe / you lent” figures '
+    +'are from. Only this device is affected.</p></div>'
     +'<div class="field"><button class="btn block" data-act="export">Download expenses as CSV</button>'
     +'<p class="note" style="margin-top:6px">One row per expense, with each person’s share.</p></div>'
     +'<div class="field"><button class="btn block" data-act="classify">Merchant categories</button>'
@@ -2514,17 +2517,27 @@ function applyBulkRules(gid,text){
   if(ok)put("rules",gid,body);
   toast(ok+" applied"+(bad?", "+bad+" line"+(bad===1?"":"s")+" not understood":"")+".");
 }
+/* Asked once, when a device first joins a group and nothing is on record for
+   it. Opened again from More -- "pick" -- it is an ordinary sheet you can
+   close; asked unprompted it has no way out, because a device that does not
+   know whose side it is on cannot show a balance at all. */
 function sheetWhoAmI(){
   var g=S.groups[S.sheet.gid],i;
   if(!g)return "";
-  var h='<div class="shead"><h2>Which one are you?</h2></div><div class="sbody">'
-    +'<p style="margin-top:0">This device has joined <b>'+esc(g.name)+'</b>. Tell it who you are, '
+  var pick=!!S.sheet.pick;
+  var h=(pick?shead("Which one are you?")
+      :'<div class="shead"><h2>Which one are you?</h2></div>')
+    +'<div class="sbody">'
+    +'<p style="margin-top:0">'+(pick?'This device shows <b>'+esc(g.name)+'</b>'
+      :'This device has joined <b>'+esc(g.name)+'</b>')+'. Tell it who you are, '
     +'and the “you owe / you lent” figures will be shown from your side.</p>';
   for(i=0;i<g.members.length;i++)
-    h+='<div class="field"><button class="btn block" data-act="setwho" data-id="'
+    h+='<div class="field"><button class="btn block'
+      +(g.members[i].id===meOf(g.id)?" primary":"")+'" data-act="setwho" data-id="'
       +esc(g.members[i].id)+'">'+esc(g.members[i].name)+'</button></div>';
-  return h+'<p class="note">Only this device is affected, and you can change it any time from '
-    +'the “You are” box above the expenses.</p></div>';
+  return h+'<p class="note">Only this device is affected — the other phone keeps its own '
+    +'answer, and nothing in the ledger changes either way. You can change it later '
+    +'under More.</p></div>';
 }
 function maybeAskWhoAmI(){
   if(S.sheet||!S.ready)return;
@@ -2779,9 +2792,10 @@ document.addEventListener("click",function(ev){
 
   if(a==="scrim"){
     /* the identity question needs an answer, so it ignores a stray tap outside */
-    if(ev.target===t&&S.sheet&&S.sheet.kind!=="whoami"){S.sheet=null;S.confirm=null;render();}
+    if(ev.target===t&&S.sheet&&(S.sheet.kind!=="whoami"||S.sheet.pick)){S.sheet=null;S.confirm=null;render();}
     return;
   }
+  if(a==="whoami"){S.sheet={kind:"whoami",gid:S.sheet.gid,pick:true};render();return;}
   if(a==="setwho"){
     var who=t.getAttribute("data-id"),wg=S.groups[S.sheet.gid];
     S.me[S.sheet.gid]=who;lsSet("evenly.me",S.me);
@@ -2956,7 +2970,6 @@ document.addEventListener("click",function(ev){
 var catT=null;                       /* debounce for the classifier search box */
 document.addEventListener("input",function(ev){
   var el=ev.target;
-  if(el.id==="mesel")return;
   if(!S.sheet)return;
   if(el.id==="catsearch"){
     S.catQuery=el.value;
@@ -2987,7 +3000,7 @@ document.addEventListener("input",function(ev){
 });
 document.addEventListener("change",function(ev){
   var el=ev.target;
-  if(el.id==="mesel"){S.me[S.gid]=el.value;lsSet("evenly.me",S.me);render();return;}
+
   if(!S.sheet)return;
   if(el.id==="csvfile"){readImportFile(el);return;}
   var mp=el.getAttribute("data-map");
@@ -3008,7 +3021,7 @@ document.addEventListener("change",function(ev){
   if(f&&el.tagName==="SELECT"){S.sheet[f]=el.value;render();}
 });
 document.addEventListener("keydown",function(ev){
-  if(ev.key==="Escape"&&S.sheet&&S.sheet.kind!=="whoami"){S.sheet=null;S.confirm=null;render();}
+  if(ev.key==="Escape"&&S.sheet&&(S.sheet.kind!=="whoami"||S.sheet.pick)){S.sheet=null;S.confirm=null;render();}
 });
 document.addEventListener("visibilitychange",function(){
   if(document.visibilityState==="visible"&&S.space)sync();
